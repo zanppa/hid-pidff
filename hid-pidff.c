@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  *  Force feedback driver for USB HID PID compliant devices
  *
@@ -6,19 +7,6 @@
  */
 
 /*
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
  */
 
 #define DEBUG
@@ -1060,7 +1048,8 @@ static int pidff_upload_effect(struct input_dev *dev, struct ff_effect *effect,
 			       struct ff_effect *old)
 {
 	struct pidff_device *pidff = dev->ff->private;
-	int type_id = 0, error = 0;
+	int type_id = 0;
+	int error = 0;
 	int needs_set_effect = 0;
 	int (*needs_set_report)(struct ff_effect *, struct ff_effect *) = NULL;
 	int (*set_report_func)(struct pidff_device *, struct ff_effect *) =
@@ -1068,7 +1057,7 @@ static int pidff_upload_effect(struct input_dev *dev, struct ff_effect *effect,
 	struct ff_envelope *envelope = NULL, *old_envelope = NULL;
 
 	if (!IS_LAZY_INITIALIZED(pidff))
-		pidff_lazy_init(pidff, dev);
+	pidff_lazy_init(pidff, dev);
 
 	pidff->recent_effect_id = effect->id;
 	if (old) {
@@ -1083,6 +1072,14 @@ static int pidff_upload_effect(struct input_dev *dev, struct ff_effect *effect,
 		pidff->recent.offset[1] = NULL;
 		needs_set_effect = 1;
 	}
+
+#if 0
+	pidff->block_load[PID_EFFECT_BLOCK_INDEX].value[0] = 0;
+	if (old) {
+		pidff->block_load[PID_EFFECT_BLOCK_INDEX].value[0] =
+			pidff->pid_id[effect->id];
+	}
+#endif
 
 	switch (effect->type) {
 	case FF_CONSTANT:
@@ -1947,6 +1944,8 @@ int hid_pidff_init(struct hid_device *hid)
 
 	clear_bit(PID_IS_LAZY_INITIALIZED, &pidff->flags);
 
+	hid_device_io_start(hid);
+
 	pidff_find_reports(hid, HID_OUTPUT_REPORT, pidff);
 	pidff_find_reports(hid, HID_FEATURE_REPORT, pidff);
 
@@ -1994,10 +1993,14 @@ int hid_pidff_init(struct hid_device *hid)
 
 	hid_info(dev, "Force feedback for USB HID PID devices by Anssi Hannula <anssi.hannula@gmail.com>\n");
 
+	hid_device_io_stop(hid);
+
 	return 0;
 
  fail:
 	pidff_empty_memory(pidff);
+	hid_device_io_stop(hid);
+
 	kfree(pidff);
 	return error;
 }
@@ -2014,3 +2017,4 @@ void hid_pidff_destroy(struct hid_device *hid)
 	if (pidff)
 		pidff_empty_memory(pidff);
 }
+
