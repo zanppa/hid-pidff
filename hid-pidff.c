@@ -23,8 +23,6 @@
 
 #define IS_DEVICE_MANAGED(device) (test_bit(PID_SUPPORTS_DEVICE_MANAGED, \
 			&device->flags))
-#define IS_LAZY_INITIALIZED(device) (test_bit(PID_IS_LAZY_INITIALIZED, \
-			&device->flags))
 
 #define	PID_EFFECTS_MAX		64
 /* Only 2 axes are currently supported, some places support more,
@@ -173,7 +171,6 @@ static const u8 pidff_effect_operation_status[] = { 0x79, 0x7b };
 
 #define PID_SUPPORTS_DEVICE_MANAGED		1
 #define PID_SUPPORTS_POOL_MOVE			2
-#define PID_IS_LAZY_INITIALIZED			3
 
 struct pidff_usage {
 	struct hid_field *field;
@@ -254,9 +251,6 @@ struct pidff_device {
 	struct pidff_memory_block *memory;
 	int alignment;
 };
-
-/* Forward declaration for functions calling lazy init */
-static void pidff_lazy_init(struct pidff_device *pidff, struct input_dev *dev);
 
 /*
  * Calculate a report storage size in device memory, i.e. the report size
@@ -445,7 +439,7 @@ static struct pidff_memory_block *pidff_allocate_memory_block(
 }
 
 /*
- * Free whole memory
+ * Free whole memory, i.e. delete the linked list
  */
 static void pidff_empty_memory(struct pidff_device *pidff)
 {
@@ -1056,9 +1050,6 @@ static int pidff_upload_effect(struct input_dev *dev, struct ff_effect *effect,
 			NULL;
 	struct ff_envelope *envelope = NULL, *old_envelope = NULL;
 
-	if (!IS_LAZY_INITIALIZED(pidff))
-	pidff_lazy_init(pidff, dev);
-
 	pidff->recent_effect_id = effect->id;
 	if (old) {
 		pidff->recent.id = pidff->effect[effect->id].id;
@@ -1259,9 +1250,6 @@ static void pidff_autocenter(struct pidff_device *pidff, u16 magnitude)
 static void pidff_set_autocenter(struct input_dev *dev, u16 magnitude)
 {
 	struct pidff_device *pidff = dev->ff->private;
-
-	if (!IS_LAZY_INITIALIZED(pidff))
-		pidff_lazy_init(pidff, dev);
 
 	pidff_autocenter(pidff, magnitude);
 }
@@ -1832,14 +1820,11 @@ static int pidff_check_autocenter(struct pidff_device *pidff,
 }
 
 /*
- * Do a "lazy" initialization, because reports are discarded
- * until probe (init) is done
+ * Do initialization that requires hw requests
  */
-static void pidff_lazy_init(struct pidff_device *pidff, struct input_dev *dev)
+static void pidff_init_hw_requests(struct pidff_device *pidff, struct input_dev *dev)
 {
 	int i = 0;
-
-	set_bit(PID_IS_LAZY_INITIALIZED, &pidff->flags);
 
 	/* pool report is sometimes messed up, refetch it */
 	hid_hw_request(pidff->hid, pidff->reports[PID_POOL],
@@ -1906,13 +1891,13 @@ static void pidff_lazy_init(struct pidff_device *pidff, struct input_dev *dev)
 		hid_dbg(pidff->hid, "max simultaneous effects is %d\n",
 			pidff->pool[PID_SIMULTANEOUS_MAX].value[0]);
 
-	pidff_check_autocenter(pidff, dev);
-
 	if (test_bit(FF_GAIN, dev->ffbit)) {
 		pidff_set(&pidff->device_gain[PID_DEVICE_GAIN_FIELD], 0xffff);
 		hid_hw_request(pidff->hid, pidff->reports[PID_DEVICE_GAIN],
 				     HID_REQ_SET_REPORT);
 	}
+
+	pidff_check_autocenter(pidff, dev);
 }
 
 /*
@@ -1942,8 +1927,6 @@ int hid_pidff_init(struct hid_device *hid)
 	pidff->flags = 0xff;	/* Check support later */
 	pidff->recent.id = 0;
 
-	clear_bit(PID_IS_LAZY_INITIALIZED, &pidff->flags);
-
 	hid_device_io_start(hid);
 
 	pidff_find_reports(hid, HID_OUTPUT_REPORT, pidff);
@@ -1961,7 +1944,10 @@ int hid_pidff_init(struct hid_device *hid)
 
 	pidff_reset(pidff);
 
-	/* This one should work with device managed devices */
+	/* Do the initialization part which requires hw requests */
+	pidff_init_hw_requests(pidff, dev);
+
+	/* Determine max effects, this one should work with device managed devices */
 	if (pidff->block_load[PID_EFFECT_BLOCK_INDEX].field) {
 		pidff->max_effects =
 			pidff->block_load[PID_EFFECT_BLOCK_INDEX].field->logical_maximum -
