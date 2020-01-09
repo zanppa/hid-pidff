@@ -362,13 +362,14 @@ static struct pidff_memory_block *pidff_allocate_memory_block(
 		struct pidff_device *pidff, int size)
 {
 	struct pidff_memory_block *block, *new_block;
-	int offset, free;
+	int offset, free, aligned_size;
 
 	if (!size)
 		return NULL;
 
 	/* Make sure alignment is as the device wants */
-	/*size += size % pidff->alignment; */ /* Alignment only affects offset */
+	/*size += size % pidff->alignment;*/ /* TODO: Alignment only affects offset */
+	aligned_size = size + (size % pidff->alignment);
 
 	if (pidff->pid_total_ram < (pidff->pid_used_ram + size))
 		return NULL;
@@ -398,7 +399,7 @@ static struct pidff_memory_block *pidff_allocate_memory_block(
 	list_for_each_entry(block, &pidff->memory, list) {
 		if (!list_is_last(&block->list, &pidff->memory)) {
 			free = list_next_entry(block, list)->block_offset -
-					block->block_offset - block->size;
+					block->block_offset - aligned_size;
 
 			/* Found large enough memory slot */
 			if (free >= size) {
@@ -407,6 +408,7 @@ static struct pidff_memory_block *pidff_allocate_memory_block(
 					return NULL;
 
 				offset = block->block_offset + block->size;
+				offset += offset % pidff->alignment;
 				new_block->block_index = pidff->recent.id;
 				new_block->block_offset = offset;
 				new_block->size = size;
@@ -422,12 +424,13 @@ static struct pidff_memory_block *pidff_allocate_memory_block(
 			}
 
 		/* Last block and large enough area at the end */
-		} else if(size <= (pidff->pid_total_ram - block->block_offset - block->size)) {
+		} else if(size <= (pidff->pid_total_ram - block->block_offset - aligned_size)) {
 			new_block = kzalloc(sizeof(struct pidff_memory_block), GFP_KERNEL);
 			if (!new_block)
 				return NULL;
 
 			offset = block->block_offset + block->size;
+			offset += offset % pidff->alignment;
 			new_block->block_index = pidff->recent.id;
 			new_block->block_offset = offset;
 			new_block->size = size;
@@ -1068,11 +1071,12 @@ static int pidff_upload_effect(struct input_dev *dev, struct ff_effect *effect,
 		needs_set_effect = 1;
 	}
 
-	if(IS_DEVICE_MANAGED(pidff) {
+	if(IS_DEVICE_MANAGED(pidff)) {
 		pidff->block_load[PID_EFFECT_BLOCK_INDEX].value[0] = 0;
-		if(old)
+		if(old) {
 			pidff->block_load[PID_EFFECT_BLOCK_INDEX].value[0] =
 					pidff->recent.id;
+		}
 	}
 
 	switch (effect->type) {
@@ -1186,6 +1190,10 @@ static int pidff_upload_effect(struct input_dev *dev, struct ff_effect *effect,
 				pidff->effect[effect->id].offset[1];
 			pidff_set_effect_report(pidff, effect);
 		}
+		/* TODO: This is needed for ffmvforce for some reason,
+		seems like without this the angle is not updated, only
+		amplitude...? */
+		pidff_set_effect_report(pidff, effect);
 	}
 
 	hid_dbg(pidff->hid, "uploaded\n");
