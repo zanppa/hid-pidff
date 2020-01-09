@@ -280,8 +280,10 @@ static int pidff_report_store_size(struct pidff_device *pidff, int report)
 	int size;
 
 	size = pidff->report_size[report];
-	if (size)
+	if (size) {
+		hid_dbg(pidff->hid, "Report %d size %d.\n", report, size);
 		return size;
+	}
 
 	/* Fallback, calculate size */
 	hid_warn(pidff->hid, "Calculating size for report %d.\n", report);
@@ -366,30 +368,30 @@ static struct pidff_memory_block *pidff_allocate_memory_block(
 		return NULL;
 
 	/* Make sure alignment is as the device wants */
-	size += size % pidff->alignment;
+	/*size += size % pidff->alignment; */ /* Alignment only affects offset */
 
 	if (pidff->pid_total_ram < (pidff->pid_used_ram + size))
 		return NULL;
 
 	if (list_empty(&pidff->memory)) {
-		block = kzalloc(sizeof(struct pidff_memory_block), GFP_KERNEL);
-		if (!block)
+		new_block = kzalloc(sizeof(struct pidff_memory_block), GFP_KERNEL);
+		if (!new_block)
 			return NULL;
 
-		list_add(&block->list, &pidff->memory);
+		list_add(&new_block->list, &pidff->memory);
 
 		offset = pidff_report_store_size(pidff, PID_SET_EFFECT);
 		offset += offset % pidff->alignment;
 		offset *= pidff->max_effects;
 
-		block->block_index = pidff->recent.id;
-		block->block_offset = offset;
-		block->size = size;
+		new_block->block_index = pidff->recent.id;
+		new_block->block_offset = offset;
+		new_block->size = size;
 
 		pidff->pid_used_ram = offset + size;
-		hid_dbg(pidff->hid, "Block allocated at 0x%x, size %d, ram used %d\n",
-			offset, size, pidff->pid_used_ram);
-		return block;
+		hid_dbg(pidff->hid, "First block allocated at 0x%x, size %d, ram used %d\n",
+			new_block->block_offset, new_block->size, pidff->pid_used_ram);
+		return new_block;
 	}
 
 	/* Try to find first large enough memory slot */
@@ -414,7 +416,7 @@ static struct pidff_memory_block *pidff_allocate_memory_block(
 				pidff->pid_used_ram += size;
 
 				hid_dbg(pidff->hid, "Block allocated at 0x%x size %d, ram used%d\n",
-					new_block->block_offset, size,
+					new_block->block_offset, new_block->size,
 					pidff->pid_used_ram);
 				return new_block;
 			}
@@ -472,6 +474,8 @@ static void pidff_free_memory_block(struct pidff_device *pidff,
 {
 	list_del(&block->list);
 	pidff->pid_used_ram -= block->size;
+	hid_dbg(pidff->hid, "Block freed from 0x%x, ram used %d\n",
+			block->block_offset, pidff->pid_used_ram);
 	kfree(block);
 }
 
@@ -503,12 +507,16 @@ static int pidff_get_or_allocate_block(struct pidff_device *pidff,
 				block->offset_num = n;
 				pidff->effect[i].offset[n] = block;
 
+				hid_dbg(pidff->hid, "New block allocated");
+
 			} else if (pidff->effect[i].offset[n]->size == size) {
 				/* Block can be re-used */
 				offset = pidff->effect[i].offset[n]->block_offset;
+				hid_dbg(pidff->hid, "Block re-used");
 
 			} else {
 				/* Block was wrong size */
+				hid_dbg(pidff->hid, "Wrong size %d!=%d block re-allocated", pidff->effect[i].offset[n]->size, size);
 				pidff_free_memory_block(pidff, pidff->effect[i].offset[n]);
 				block = pidff_allocate_memory_block(pidff, size);
 				if (!block)
@@ -1060,13 +1068,12 @@ static int pidff_upload_effect(struct input_dev *dev, struct ff_effect *effect,
 		needs_set_effect = 1;
 	}
 
-#if 0
-	pidff->block_load[PID_EFFECT_BLOCK_INDEX].value[0] = 0;
-	if (old) {
-		pidff->block_load[PID_EFFECT_BLOCK_INDEX].value[0] =
-			pidff->pid_id[effect->id];
+	if(IS_DEVICE_MANAGED(pidff) {
+		pidff->block_load[PID_EFFECT_BLOCK_INDEX].value[0] = 0;
+		if(old)
+			pidff->block_load[PID_EFFECT_BLOCK_INDEX].value[0] =
+					pidff->recent.id;
 	}
-#endif
 
 	switch (effect->type) {
 	case FF_CONSTANT:
