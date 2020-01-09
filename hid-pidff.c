@@ -19,6 +19,8 @@
 
 #include <linux/hid.h>
 
+#include <linux/list.h>
+
 #include "usbhid.h"
 
 #define IS_DEVICE_MANAGED(device) (test_bit(PID_SUPPORTS_DEVICE_MANAGED, \
@@ -183,7 +185,7 @@ struct pidff_memory_block {
 	unsigned int size;		/* Block size (reserved memory) */
 	u8 offset_num;
 
-	struct pidff_memory_block *next;
+	struct list_head list;
 };
 
 struct pidff_info {
@@ -199,8 +201,7 @@ struct pidff_device {
 	int report_size[sizeof(pidff_reports)];
 
 	struct pidff_usage set_effect[sizeof(pidff_set_effect)];
-	struct pidff_usage set_effect_optional[
-			sizeof(pidff_set_effect_optional)];
+	struct pidff_usage set_effect_optional[sizeof(pidff_set_effect_optional)];
 	struct pidff_usage block_offset[PID_AXES_MAX];
 	struct pidff_usage set_envelope[sizeof(pidff_set_envelope)];
 	struct pidff_usage set_condition[sizeof(pidff_set_condition)];
@@ -248,7 +249,8 @@ struct pidff_device {
 	struct pidff_info recent;
 	int recent_effect_id;
 
-	struct pidff_memory_block *memory;
+	/* struct pidff_memory_block *memory; */
+	struct list_head memory;
 	int alignment;
 };
 
@@ -369,34 +371,36 @@ static struct pidff_memory_block *pidff_allocate_memory_block(
 	if (pidff->pid_total_ram < (pidff->pid_used_ram + size))
 		return NULL;
 
-	if (pidff->memory == NULL) {
-		pidff->memory = kzalloc(sizeof(*pidff->memory), GFP_KERNEL);
-		if (!pidff->memory)
+	if (list_empty(&pidff->memory)) {
+		block = kzalloc(sizeof(struct pidff_memory_block), GFP_KERNEL);
+		if (!block)
 			return NULL;
+
+		list_add(&block->list, &pidff->memory);
 
 		offset = pidff_report_store_size(pidff, PID_SET_EFFECT);
 		offset += offset % pidff->alignment;
 		offset *= pidff->max_effects;
 
-		pidff->memory[0].block_index = pidff->recent.id;
-		pidff->memory[0].block_offset = offset;
-		pidff->memory[0].size = size;
+		block->block_index = pidff->recent.id;
+		block->block_offset = offset;
+		block->size = size;
 
 		pidff->pid_used_ram = offset + size;
 		hid_dbg(pidff->hid, "Block allocated at 0x%x, size %d, ram used %d\n",
-			pidff->memory->block_offset, size, pidff->pid_used_ram);
-		return pidff->memory;
+			offset, size, pidff->pid_used_ram);
+		return block;
 	}
 
-	block = pidff->memory;
-	while (block) {
-		if (block->next) {
-			free = block->next->block_offset - block->block_offset
-				- block->size;
+	/* Try to find first large enough memory slot */
+	list_for_each_entry(block, &pidff->memory, list) {
+		if (!list_is_last(&block->list, &pidff->memory)) {
+			free = list_next_entry(block, list)->block_offset -
+					block->block_offset - block->size;
 
+			/* Found large enough memory slot */
 			if (free >= size) {
-				new_block = kzalloc(sizeof(*pidff->memory),
-					GFP_KERNEL);
+				new_block = kzalloc(sizeof(struct pidff_memory_block), GFP_KERNEL);
 				if (!new_block)
 					return NULL;
 
@@ -404,8 +408,8 @@ static struct pidff_memory_block *pidff_allocate_memory_block(
 				new_block->block_index = pidff->recent.id;
 				new_block->block_offset = offset;
 				new_block->size = size;
-				new_block->next = block->next;
-				block->next = new_block;
+
+				list_add(&new_block->list, &block->list);
 
 				pidff->pid_used_ram += size;
 
@@ -414,8 +418,10 @@ static struct pidff_memory_block *pidff_allocate_memory_block(
 					pidff->pid_used_ram);
 				return new_block;
 			}
-		} else {
-			new_block = kzalloc(sizeof(*pidff->memory), GFP_KERNEL);
+
+		/* Last block and large enough area at the end */
+		} else if(size <= (pidff->pid_total_ram - block->block_offset - block->size)) {
+			new_block = kzalloc(sizeof(struct pidff_memory_block), GFP_KERNEL);
 			if (!new_block)
 				return NULL;
 
@@ -423,7 +429,8 @@ static struct pidff_memory_block *pidff_allocate_memory_block(
 			new_block->block_index = pidff->recent.id;
 			new_block->block_offset = offset;
 			new_block->size = size;
-			block->next = new_block;
+
+			list_add(&new_block->list, &block->list);
 
 			pidff->pid_used_ram += size;
 
@@ -431,9 +438,13 @@ static struct pidff_memory_block *pidff_allocate_memory_block(
 				new_block->block_offset, size,
 				pidff->pid_used_ram);
 			return new_block;
-		}
 
-		block = block->next;
+		} else {
+			/* TODO: Enough free memory but not in consecutive
+			area so need to move old blocks around (defragment) to fit the new effect.
+			For now, just fail. */
+			return NULL;
+		}
 	}
 	return NULL;
 }
@@ -443,15 +454,13 @@ static struct pidff_memory_block *pidff_allocate_memory_block(
  */
 static void pidff_empty_memory(struct pidff_device *pidff)
 {
-	struct pidff_memory_block *next;
+	struct pidff_memory_block *block, *temp;
 
-	next = pidff->memory;
-	while (next) {
-		next = next->next;
-		kfree(pidff->memory);
-		pidff->memory = next;
+	list_for_each_entry_safe(block, temp, &pidff->memory, list) {
+		list_del(&block->list);
+		kfree(block);
 	}
-	pidff->memory = NULL;
+
 	pidff->pid_used_ram = 0;
 }
 
@@ -461,27 +470,14 @@ static void pidff_empty_memory(struct pidff_device *pidff)
 static void pidff_free_memory_block(struct pidff_device *pidff,
 		struct pidff_memory_block *block)
 {
-	struct pidff_memory_block *next;
-
-	if (block == pidff->memory) {
-		pidff->memory = block->next;
-	} else {
-		next = pidff->memory;
-		while (next) {
-			if (next->next == block) {
-				next->next = block->next;
-				break;
-			}
-			next = next->next;
-		}
-	}
-
+	list_del(&block->list);
 	pidff->pid_used_ram -= block->size;
 	kfree(block);
 }
 
 /*
  * Get existing block or allocate a new block for effect info.
+ * n is the axis number used.
  * Returns the offset or 0 on error.
  */
 static int pidff_get_or_allocate_block(struct pidff_device *pidff,
@@ -490,30 +486,31 @@ static int pidff_get_or_allocate_block(struct pidff_device *pidff,
 	int i, offset;
 	struct pidff_memory_block *block;
 
-	/* Offsets are originally from 1..., scale to 0... */
+	/* Offsets start from 1..., scale to 0... */
 	n--;
-	if (n < 0 || n > PID_AXES_MAX)
+	if (n < 0 || n >= PID_AXES_MAX)
 		return 0;
 
 	for (i = 0; i < pidff->max_effects; i++) {
 		if (pidff->effect[i].id == effect_id) {
 			if (!pidff->effect[i].offset[n]) {
-				block = pidff_allocate_memory_block(pidff,
-						size);
+				/* Memory not yet allocated */
+				block = pidff_allocate_memory_block(pidff, size);
 				if (!block)
 					return 0;
 
 				offset = block->block_offset;
 				block->offset_num = n;
 				pidff->effect[i].offset[n] = block;
+
 			} else if (pidff->effect[i].offset[n]->size == size) {
-				offset = pidff->effect[i].offset[n]->
-						block_offset;
+				/* Block can be re-used */
+				offset = pidff->effect[i].offset[n]->block_offset;
+
 			} else {
-				pidff_free_memory_block(pidff, pidff->effect[i].
-						offset[n]);
-				block = pidff_allocate_memory_block(pidff,
-						size);
+				/* Block was wrong size */
+				pidff_free_memory_block(pidff, pidff->effect[i].offset[n]);
+				block = pidff_allocate_memory_block(pidff, size);
 				if (!block)
 					return 0;
 
@@ -991,22 +988,21 @@ static int pidff_playback(struct input_dev *dev, int effect_id, int value)
  */
 static void pidff_erase_pid(struct pidff_device *pidff, int pid_id)
 {
-	struct pidff_memory_block *block, *b2;
+	struct list_head *pos, *temp;
+	struct pidff_memory_block *block;
 
 	if (IS_DEVICE_MANAGED(pidff)) {
 		pidff->block_free[PID_EFFECT_BLOCK_INDEX].value[0] = pid_id;
 		hid_hw_request(pidff->hid, pidff->reports[PID_BLOCK_FREE],
-				HID_REQ_SET_REPORT);
-	} else {
-		block = pidff->memory;
-		while (block) {
-			b2 = block;
-			block = block->next;
+					HID_REQ_SET_REPORT);
 
-			if (b2->block_index == pid_id) {
-				hid_dbg(pidff->hid, "Block erased at 0x%x\n",
-					b2->block_offset);
-				pidff_free_memory_block(pidff, b2);
+	} else {
+		list_for_each_safe(pos, temp, &pidff->memory) {
+			block = list_entry(pos, struct pidff_memory_block, list);
+
+			if (block->block_index == pid_id) {
+				hid_dbg(pidff->hid, "Block erased at 0x%x\n", block->block_offset);
+				pidff_free_memory_block(pidff, block);
 			}
 		}
 	}
@@ -1922,6 +1918,8 @@ int hid_pidff_init(struct hid_device *hid)
 	pidff = kzalloc(sizeof(*pidff), GFP_KERNEL);
 	if (!pidff)
 		return -ENOMEM;
+
+	INIT_LIST_HEAD(&pidff->memory);
 
 	pidff->hid = hid;
 	pidff->flags = 0xff;	/* Check support later */
