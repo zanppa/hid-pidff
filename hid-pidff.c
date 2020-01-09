@@ -1182,17 +1182,14 @@ static int pidff_upload_effect(struct input_dev *dev, struct ff_effect *effect,
 		if (!old || pidff->recent.offset[0] !=
 				pidff->effect[effect->id].offset[0] ||
 				pidff->recent.offset[1] !=
-				pidff->effect[effect->id].offset[1]) {
+				pidff->effect[effect->id].offset[1] ||
+				needs_set_effect) {
 			pidff->recent.offset[0] =
 				pidff->effect[effect->id].offset[0];
 			pidff->recent.offset[1] =
 				pidff->effect[effect->id].offset[1];
 			pidff_set_effect_report(pidff, effect);
 		}
-		/* TODO: This is needed for ffmvforce for some reason,
-		seems like without this the angle is not updated, only
-		amplitude...? */
-		pidff_set_effect_report(pidff, effect);
 	}
 
 	hid_dbg(pidff->hid, "uploaded\n");
