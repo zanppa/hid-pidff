@@ -773,7 +773,6 @@ static int pidff_needs_set_periodic(struct ff_effect *effect,
 	return effect->u.periodic.magnitude != old->u.periodic.magnitude ||
 	       effect->u.periodic.offset != old->u.periodic.offset ||
 	       effect->u.periodic.phase != old->u.periodic.phase ||
-	       effect->u.periodic.phase != old->u.periodic.phase ||
 	       effect->u.periodic.period != old->u.periodic.period;
 }
 
