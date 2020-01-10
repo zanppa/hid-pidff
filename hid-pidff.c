@@ -362,14 +362,13 @@ static struct pidff_memory_block *pidff_allocate_memory_block(
 		struct pidff_device *pidff, int size)
 {
 	struct pidff_memory_block *block, *new_block;
-	int offset, free, aligned_size;
+	int offset, free;
 
 	if (!size)
 		return NULL;
 
 	/* Make sure alignment is as the device wants */
-	/*size += size % pidff->alignment;*/ /* TODO: Alignment only affects offset */
-	aligned_size = size + (size % pidff->alignment);
+	size += size % pidff->alignment;
 
 	if (pidff->pid_total_ram < (pidff->pid_used_ram + size))
 		return NULL;
@@ -399,7 +398,7 @@ static struct pidff_memory_block *pidff_allocate_memory_block(
 	list_for_each_entry(block, &pidff->memory, list) {
 		if (!list_is_last(&block->list, &pidff->memory)) {
 			free = list_next_entry(block, list)->block_offset -
-					block->block_offset - aligned_size;
+					block->block_offset - block->size;
 
 			/* Found large enough memory slot */
 			if (free >= size) {
@@ -408,7 +407,6 @@ static struct pidff_memory_block *pidff_allocate_memory_block(
 					return NULL;
 
 				offset = block->block_offset + block->size;
-				offset += offset % pidff->alignment;
 				new_block->block_index = pidff->recent.id;
 				new_block->block_offset = offset;
 				new_block->size = size;
@@ -424,13 +422,12 @@ static struct pidff_memory_block *pidff_allocate_memory_block(
 			}
 
 		/* Last block and large enough area at the end */
-		} else if(size <= (pidff->pid_total_ram - block->block_offset - aligned_size)) {
+		} else if(size <= (pidff->pid_total_ram - block->block_offset - block->size)) {
 			new_block = kzalloc(sizeof(struct pidff_memory_block), GFP_KERNEL);
 			if (!new_block)
 				return NULL;
 
 			offset = block->block_offset + block->size;
-			offset += offset % pidff->alignment;
 			new_block->block_index = pidff->recent.id;
 			new_block->block_offset = offset;
 			new_block->size = size;
@@ -497,6 +494,9 @@ static int pidff_get_or_allocate_block(struct pidff_device *pidff,
 	n--;
 	if (n < 0 || n >= PID_AXES_MAX)
 		return 0;
+
+	/* Make sure the size alignment is correct */
+	size += size % pidff->alignment;
 
 	for (i = 0; i < pidff->max_effects; i++) {
 		if (pidff->effect[i].id == effect_id) {
