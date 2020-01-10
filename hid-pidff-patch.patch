@@ -1,5 +1,5 @@
 --- hid-pidff.c.latest-git	2020-01-08 22:45:30.047530244 +0200
-+++ hid-pidff.c	2020-01-08 22:45:16.441579398 +0200
++++ hid-pidff.c	2020-01-10 21:57:13.332954360 +0200
 @@ -3,12 +3,13 @@
   *  Force feedback driver for USB HID PID compliant devices
   *
@@ -15,13 +15,15 @@
  
  #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
  
-@@ -20,7 +21,15 @@
+@@ -18,9 +19,17 @@
  
+ #include <linux/hid.h>
+ 
++#include <linux/list.h>
++
  #include "usbhid.h"
  
 +#define IS_DEVICE_MANAGED(device) (test_bit(PID_SUPPORTS_DEVICE_MANAGED, \
-+			&device->flags))
-+#define IS_LAZY_INITIALIZED(device) (test_bit(PID_IS_LAZY_INITIALIZED, \
 +			&device->flags))
 +
  #define	PID_EFFECTS_MAX		64
@@ -110,7 +112,6 @@
 +static const u8 pidff_set_envelope[] = {
 +	PID_INDEX_PLACEHOLDER, 0x5b, 0x5c, 0x5d, 0x5e
 +};
-+
  
 -#define PID_PARAM_BLOCK_OFFSET	1
 -#define PID_CP_OFFSET		2
@@ -119,6 +120,7 @@
 -#define PID_POS_SATURATION	5
 -#define PID_NEG_SATURATION	6
 -#define PID_DEAD_BAND		7
++
 +#define PID_CP_OFFSET		1
 +#define PID_POS_COEFFICIENT	2
 +#define PID_NEG_COEFFICIENT	3
@@ -169,7 +171,7 @@
  
  /* Special field key tables used to put special field keys into arrays */
  
-@@ -136,17 +169,42 @@
+@@ -136,17 +169,40 @@
  #define PID_EFFECT_STOP		1
  static const u8 pidff_effect_operation_status[] = { 0x79, 0x7b };
  
@@ -177,7 +179,6 @@
 +
 +#define PID_SUPPORTS_DEVICE_MANAGED		1
 +#define PID_SUPPORTS_POOL_MOVE			2
-+#define PID_IS_LAZY_INITIALIZED			3
 +
  struct pidff_usage {
  	struct hid_field *field;
@@ -190,7 +191,7 @@
 +	unsigned int size;		/* Block size (reserved memory) */
 +	u8 offset_num;
 +
-+	struct pidff_memory_block *next;
++	struct list_head list;
 +};
 +
 +struct pidff_info {
@@ -206,13 +207,12 @@
 +	int report_size[sizeof(pidff_reports)];
  
  	struct pidff_usage set_effect[sizeof(pidff_set_effect)];
-+	struct pidff_usage set_effect_optional[
-+			sizeof(pidff_set_effect_optional)];
++	struct pidff_usage set_effect_optional[sizeof(pidff_set_effect_optional)];
 +	struct pidff_usage block_offset[PID_AXES_MAX];
  	struct pidff_usage set_envelope[sizeof(pidff_set_envelope)];
  	struct pidff_usage set_condition[sizeof(pidff_set_condition)];
  	struct pidff_usage set_periodic[sizeof(pidff_set_periodic)];
-@@ -156,6 +214,7 @@
+@@ -156,6 +212,7 @@
  	struct pidff_usage device_gain[sizeof(pidff_device_gain)];
  	struct pidff_usage block_load[sizeof(pidff_block_load)];
  	struct pidff_usage pool[sizeof(pidff_pool)];
@@ -220,7 +220,7 @@
  	struct pidff_usage effect_operation[sizeof(pidff_effect_operation)];
  	struct pidff_usage block_free[sizeof(pidff_block_free)];
  
-@@ -183,9 +242,299 @@
+@@ -183,10 +240,304 @@
  	int status_id[sizeof(pidff_block_load_status)];
  	int operation_id[sizeof(pidff_effect_operation_status)];
  
@@ -231,17 +231,15 @@
 +	unsigned long flags;
 +
 +	struct pidff_info effect[PID_EFFECTS_MAX];
-+	struct pidff_info recent;
-+	int recent_effect_id;
++	struct pidff_info active;
++	int active_effect_id;
 +
-+	struct pidff_memory_block *memory;
++	/* struct pidff_memory_block *memory; */
++	struct list_head memory;
 +	int alignment;
  };
  
-+/* Forward declaration for functions calling lazy init */
-+static void pidff_lazy_init(struct pidff_device *pidff, struct input_dev *dev);
-+
-+/*
+ /*
 + * Calculate a report storage size in device memory, i.e. the report size
 + * minus block offsets and effect id. Calculation is used as a fallback, if
 + * device does not fill the report sizes in PID_POOL. The resulting size may
@@ -267,8 +265,10 @@
 +	int size;
 +
 +	size = pidff->report_size[report];
-+	if (size)
++	if (size) {
++		hid_dbg(pidff->hid, "Report %d size %d.\n", report, size);
 +		return size;
++	}
 +
 +	/* Fallback, calculate size */
 +	hid_warn(pidff->hid, "Calculating size for report %d.\n", report);
@@ -347,7 +347,7 @@
 +		struct pidff_device *pidff, int size)
 +{
 +	struct pidff_memory_block *block, *new_block;
-+	int offset, free;
++	int offset, free_mem;
 +
 +	if (!size)
 +		return NULL;
@@ -358,61 +358,66 @@
 +	if (pidff->pid_total_ram < (pidff->pid_used_ram + size))
 +		return NULL;
 +
-+	if (pidff->memory == NULL) {
-+		pidff->memory = kzalloc(sizeof(*pidff->memory), GFP_KERNEL);
-+		if (!pidff->memory)
++	if (list_empty(&pidff->memory)) {
++		new_block = kzalloc(sizeof(struct pidff_memory_block), GFP_KERNEL);
++		if (!new_block)
 +			return NULL;
++
++		list_add(&new_block->list, &pidff->memory);
 +
 +		offset = pidff_report_store_size(pidff, PID_SET_EFFECT);
 +		offset += offset % pidff->alignment;
 +		offset *= pidff->max_effects;
 +
-+		pidff->memory[0].block_index = pidff->recent.id;
-+		pidff->memory[0].block_offset = offset;
-+		pidff->memory[0].size = size;
++		new_block->block_index = pidff->active.id;
++		new_block->block_offset = offset;
++		new_block->size = size;
 +
 +		pidff->pid_used_ram = offset + size;
-+		hid_dbg(pidff->hid, "Block allocated at 0x%x, size %d, ram used %d\n",
-+			pidff->memory->block_offset, size, pidff->pid_used_ram);
-+		return pidff->memory;
++		hid_dbg(pidff->hid, "First block allocated at 0x%x, size %d, ram used %d\n",
++			new_block->block_offset, new_block->size, pidff->pid_used_ram);
++		return new_block;
 +	}
 +
-+	block = pidff->memory;
-+	while (block) {
-+		if (block->next) {
-+			free = block->next->block_offset - block->block_offset
-+				- block->size;
++	/* Try to find first large enough memory slot */
++	list_for_each_entry(block, &pidff->memory, list) {
++		if (!list_is_last(&block->list, &pidff->memory)) {
++			free_mem = list_next_entry(block, list)->block_offset -
++					block->block_offset - block->size;
 +
-+			if (free >= size) {
-+				new_block = kzalloc(sizeof(*pidff->memory),
-+					GFP_KERNEL);
++			/* Found large enough memory slot */
++			if (free_mem >= size) {
++				new_block = kzalloc(sizeof(struct pidff_memory_block), GFP_KERNEL);
 +				if (!new_block)
 +					return NULL;
 +
 +				offset = block->block_offset + block->size;
-+				new_block->block_index = pidff->recent.id;
++				new_block->block_index = pidff->active.id;
 +				new_block->block_offset = offset;
 +				new_block->size = size;
-+				new_block->next = block->next;
-+				block->next = new_block;
++
++				list_add(&new_block->list, &block->list);
 +
 +				pidff->pid_used_ram += size;
 +
 +				hid_dbg(pidff->hid, "Block allocated at 0x%x size %d, ram used%d\n",
-+					new_block->block_offset, size,
++					new_block->block_offset, new_block->size,
 +					pidff->pid_used_ram);
 +				return new_block;
 +			}
-+		} else {
-+			new_block = kzalloc(sizeof(*pidff->memory), GFP_KERNEL);
++
++		/* Last block and large enough area at the end */
++		} else if(size <= (pidff->pid_total_ram - block->block_offset - block->size)) {
++			new_block = kzalloc(sizeof(struct pidff_memory_block), GFP_KERNEL);
 +			if (!new_block)
 +				return NULL;
 +
 +			offset = block->block_offset + block->size;
-+			new_block->block_index = pidff->recent.id;
++			new_block->block_index = pidff->active.id;
 +			new_block->block_offset = offset;
 +			new_block->size = size;
-+			block->next = new_block;
++
++			list_add(&new_block->list, &block->list);
 +
 +			pidff->pid_used_ram += size;
 +
@@ -420,27 +425,29 @@
 +				new_block->block_offset, size,
 +				pidff->pid_used_ram);
 +			return new_block;
-+		}
 +
-+		block = block->next;
++		} else {
++			/* TODO: Enough free memory but not in consecutive
++			area so need to move old blocks around (defragment) to fit the new effect.
++			For now, just fail. */
++			return NULL;
++		}
 +	}
 +	return NULL;
 +}
 +
 +/*
-+ * Free whole memory
++ * Free whole memory, i.e. delete the linked list
 + */
 +static void pidff_empty_memory(struct pidff_device *pidff)
 +{
-+	struct pidff_memory_block *next;
++	struct pidff_memory_block *block, *temp;
 +
-+	next = pidff->memory;
-+	while (next) {
-+		next = next->next;
-+		kfree(pidff->memory);
-+		pidff->memory = next;
++	list_for_each_entry_safe(block, temp, &pidff->memory, list) {
++		list_del(&block->list);
++		kfree(block);
 +	}
-+	pidff->memory = NULL;
++
 +	pidff->pid_used_ram = 0;
 +}
 +
@@ -450,27 +457,16 @@
 +static void pidff_free_memory_block(struct pidff_device *pidff,
 +		struct pidff_memory_block *block)
 +{
-+	struct pidff_memory_block *next;
-+
-+	if (block == pidff->memory) {
-+		pidff->memory = block->next;
-+	} else {
-+		next = pidff->memory;
-+		while (next) {
-+			if (next->next == block) {
-+				next->next = block->next;
-+				break;
-+			}
-+			next = next->next;
-+		}
-+	}
-+
++	list_del(&block->list);
 +	pidff->pid_used_ram -= block->size;
++	hid_dbg(pidff->hid, "Block freed from 0x%x, ram used %d\n",
++			block->block_offset, pidff->pid_used_ram);
 +	kfree(block);
 +}
 +
 +/*
 + * Get existing block or allocate a new block for effect info.
++ * n is the axis number used.
 + * Returns the offset or 0 on error.
 + */
 +static int pidff_get_or_allocate_block(struct pidff_device *pidff,
@@ -479,30 +475,38 @@
 +	int i, offset;
 +	struct pidff_memory_block *block;
 +
-+	/* Offsets are originally from 1..., scale to 0... */
++	/* Offsets start from 1..., scale to 0... */
 +	n--;
-+	if (n < 0 || n > PID_AXES_MAX)
++	if (n < 0 || n >= PID_AXES_MAX)
 +		return 0;
++
++	/* Make sure the size alignment is correct */
++	size += size % pidff->alignment;
 +
 +	for (i = 0; i < pidff->max_effects; i++) {
 +		if (pidff->effect[i].id == effect_id) {
 +			if (!pidff->effect[i].offset[n]) {
-+				block = pidff_allocate_memory_block(pidff,
-+						size);
++				/* Memory not yet allocated */
++				block = pidff_allocate_memory_block(pidff, size);
 +				if (!block)
 +					return 0;
 +
 +				offset = block->block_offset;
 +				block->offset_num = n;
 +				pidff->effect[i].offset[n] = block;
++
++				hid_dbg(pidff->hid, "New block allocated");
++
 +			} else if (pidff->effect[i].offset[n]->size == size) {
-+				offset = pidff->effect[i].offset[n]->
-+						block_offset;
++				/* Block can be re-used */
++				offset = pidff->effect[i].offset[n]->block_offset;
++				hid_dbg(pidff->hid, "Block re-used");
++
 +			} else {
-+				pidff_free_memory_block(pidff, pidff->effect[i].
-+						offset[n]);
-+				block = pidff_allocate_memory_block(pidff,
-+						size);
++				/* Block was wrong size */
++				hid_dbg(pidff->hid, "Wrong size %d!=%d block re-allocated", pidff->effect[i].offset[n]->size, size);
++				pidff_free_memory_block(pidff, pidff->effect[i].offset[n]);
++				block = pidff_allocate_memory_block(pidff, size);
 +				if (!block)
 +					return 0;
 +
@@ -518,10 +522,11 @@
 +	return 0;
 +}
 +
- /*
++/*
   * Scale an unsigned value with range 0..max for the given field
   */
-@@ -207,6 +556,8 @@
+ static int pidff_rescale(int i, int max, struct hid_field *field)
+@@ -207,6 +558,8 @@
  
  static void pidff_set(struct pidff_usage *usage, u16 value)
  {
@@ -530,7 +535,7 @@
  	usage->value[0] = pidff_rescale(value, 0xffff, usage->field);
  	pr_debug("calculated from %d to %d\n", value, usage->value[0]);
  }
-@@ -229,11 +580,23 @@
+@@ -229,11 +582,23 @@
  /*
   * Send envelope report to the device
   */
@@ -544,9 +549,9 @@
 +
 +	if (IS_DEVICE_MANAGED(pidff)) {
 +		pidff->set_envelope[PID_EFFECT_BLOCK_INDEX].value[0] =
-+		    pidff->recent.id;
++		    pidff->active.id;
 +	} else {
-+		offset = pidff_get_or_allocate_block(pidff, pidff->recent.id,
++		offset = pidff_get_or_allocate_block(pidff, pidff->active.id,
 +				pidff_report_store_size(pidff,
 +				PID_SET_ENVELOPE), 2);
 +		if (!offset)
@@ -557,7 +562,7 @@
  
  	pidff->set_envelope[PID_ATTACK_LEVEL].value[0] =
  	    pidff_rescale(envelope->attack_level >
-@@ -253,6 +616,7 @@
+@@ -253,6 +618,7 @@
  
  	hid_hw_request(pidff->hid, pidff->reports[PID_SET_ENVELOPE],
  			HID_REQ_SET_REPORT);
@@ -565,7 +570,7 @@
  }
  
  /*
-@@ -270,16 +634,30 @@
+@@ -270,16 +636,30 @@
  /*
   * Send constant force report to the device
   */
@@ -579,9 +584,9 @@
 +
 +	if (IS_DEVICE_MANAGED(pidff)) {
 +		pidff->set_constant[PID_EFFECT_BLOCK_INDEX].value[0] =
-+			pidff->recent.id;
++			pidff->active.id;
 +	} else {
-+		offset = pidff_get_or_allocate_block(pidff, pidff->recent.id,
++		offset = pidff_get_or_allocate_block(pidff, pidff->active.id,
 +				pidff_report_store_size(pidff,
 +				PID_SET_CONSTANT), 1);
 +		if (!offset)
@@ -599,28 +604,28 @@
  }
  
  /*
-@@ -298,19 +676,40 @@
+@@ -298,19 +678,40 @@
  				    struct ff_effect *effect)
  {
  	pidff->set_effect[PID_EFFECT_BLOCK_INDEX].value[0] =
 -		pidff->block_load[PID_EFFECT_BLOCK_INDEX].value[0];
 -	pidff->set_effect_type->value[0] =
 -		pidff->create_new_effect_type->value[0];
-+		pidff->recent.id;
++		pidff->active.id;
 +
 +	if (IS_DEVICE_MANAGED(pidff)) {
 +		pidff->set_effect_type->value[0] =
 +			pidff->create_new_effect_type->value[0];
 +	} else {
-+		pidff->set_effect_type->value[0] = pidff->recent.effect_type_id;
-+		if (pidff->recent.offset[0])
-+			pidff->block_offset[0].value[0] = pidff->recent.
++		pidff->set_effect_type->value[0] = pidff->active.effect_type_id;
++		if (pidff->active.offset[0])
++			pidff->block_offset[0].value[0] = pidff->active.
 +					offset[0]->block_offset;
 +		else
 +			pidff->block_offset[0].value[0] = 0;
 +
-+		if (pidff->recent.offset[1])
-+			pidff->block_offset[1].value[0] = pidff->recent.
++		if (pidff->active.offset[1])
++			pidff->block_offset[1].value[0] = pidff->active.
 +					offset[1]->block_offset;
 +		else
 +			pidff->block_offset[1].value[0] = 0;
@@ -647,7 +652,7 @@
  	pidff->set_effect[PID_START_DELAY].value[0] = effect->replay.delay;
  
  	hid_hw_request(pidff->hid, pidff->reports[PID_SET_EFFECT],
-@@ -333,11 +732,24 @@
+@@ -333,11 +734,24 @@
  /*
   * Send periodic effect report to the device
   */
@@ -661,9 +666,9 @@
 +
 +	if (IS_DEVICE_MANAGED(pidff)) {
 +		pidff->set_periodic[PID_EFFECT_BLOCK_INDEX].value[0] =
-+			pidff->recent.id;
++			pidff->active.id;
 +	} else {
-+		offset = pidff_get_or_allocate_block(pidff, pidff->recent.id,
++		offset = pidff_get_or_allocate_block(pidff, pidff->active.id,
 +				pidff_report_store_size(pidff,
 +				PID_SET_PERIODIC), 1);
 +		if (!offset)
@@ -675,7 +680,7 @@
  	pidff_set_signed(&pidff->set_periodic[PID_MAGNITUDE],
  			 effect->u.periodic.magnitude);
  	pidff_set_signed(&pidff->set_periodic[PID_OFFSET],
-@@ -347,7 +759,7 @@
+@@ -347,7 +761,7 @@
  
  	hid_hw_request(pidff->hid, pidff->reports[PID_SET_PERIODIC],
  			HID_REQ_SET_REPORT);
@@ -684,14 +689,7 @@
  }
  
  /*
-@@ -359,22 +771,37 @@
- 	return effect->u.periodic.magnitude != old->u.periodic.magnitude ||
- 	       effect->u.periodic.offset != old->u.periodic.offset ||
- 	       effect->u.periodic.phase != old->u.periodic.phase ||
-+	       effect->u.periodic.phase != old->u.periodic.phase ||
- 	       effect->u.periodic.period != old->u.periodic.period;
- }
- 
+@@ -365,16 +779,30 @@
  /*
   * Send condition effect reports to the device
   */
@@ -706,7 +704,7 @@
 -		pidff->block_load[PID_EFFECT_BLOCK_INDEX].value[0];
 +	if (IS_DEVICE_MANAGED(pidff))
 +		pidff->set_condition[PID_EFFECT_BLOCK_INDEX].value[0] =
-+			pidff->recent.id;
++			pidff->active.id;
  
  	for (i = 0; i < 2; i++) {
 -		pidff->set_condition[PID_PARAM_BLOCK_OFFSET].value[0] = i;
@@ -715,7 +713,7 @@
 +						i;
 +		} else {
 +			offset = pidff_get_or_allocate_block(pidff,
-+				pidff->recent.id, pidff_report_store_size(pidff,
++				pidff->active.id, pidff_report_store_size(pidff,
 +				PID_SET_CONDITION), i+1);
 +			if (!offset)
 +				return -ENOSPC;
@@ -727,7 +725,7 @@
  		pidff_set_signed(&pidff->set_condition[PID_CP_OFFSET],
  				 effect->u.condition[i].center);
  		pidff_set_signed(&pidff->set_condition[PID_POS_COEFFICIENT],
-@@ -387,9 +814,11 @@
+@@ -387,9 +815,11 @@
  			  effect->u.condition[i].left_saturation);
  		pidff_set(&pidff->set_condition[PID_DEAD_BAND],
  			  effect->u.condition[i].deadband);
@@ -739,7 +737,7 @@
  }
  
  /*
-@@ -419,17 +848,31 @@
+@@ -419,17 +849,31 @@
  /*
   * Send ramp force report to the device
   */
@@ -753,9 +751,9 @@
 +
 +	if (IS_DEVICE_MANAGED(pidff)) {
 +		pidff->set_ramp[PID_EFFECT_BLOCK_INDEX].value[0] =
-+			pidff->recent.id;
++			pidff->active.id;
 +	} else {
-+		offset = pidff_get_or_allocate_block(pidff, pidff->recent.id,
++		offset = pidff_get_or_allocate_block(pidff, pidff->active.id,
 +				pidff_report_store_size(pidff, PID_SET_RAMP),
 +				1);
 +		if (!offset)
@@ -774,11 +772,9 @@
  }
  
  /*
-@@ -451,37 +894,69 @@
- static int pidff_request_effect_upload(struct pidff_device *pidff, int efnum)
+@@ -452,36 +896,63 @@
  {
  	int j;
-+	int used[PID_EFFECTS_MAX] = {0};
  
 -	pidff->create_new_effect_type->value[0] = efnum;
 -	hid_hw_request(pidff->hid, pidff->reports[PID_CREATE_NEW_EFFECT],
@@ -822,7 +818,7 @@
 +					pidff->block_load[PID_RAM_POOL_AVAILABLE].value ?
 +					pidff->block_load[PID_RAM_POOL_AVAILABLE].value[0] : -1);
 +
-+				pidff->recent.id = pidff->
++				pidff->active.id = pidff->
 +					block_load[PID_EFFECT_BLOCK_INDEX].
 +					value[0];
 +				return 0;
@@ -845,22 +841,18 @@
 +
 +	} else {
 +		/* Driver managed mode, allocate a new id if any is available */
-+		for (j = 0; j < pidff->max_effects; j++)
-+			if (pidff->effect[j].id > -1)
-+				used[pidff->effect[j].id] = 1;
-+
 +		for (j = 0; j < pidff->max_effects; j++) {
-+			if (used[j])
++			if (pidff->effect[j].id > -1)
 +				continue;
 +
-+			pidff->effect[pidff->recent_effect_id].id =
-+					pidff->recent.id = j;
-+			pidff->effect[pidff->recent_effect_id].offset[0] = NULL;
-+			pidff->effect[pidff->recent_effect_id].offset[1] = NULL;
-+			pidff->effect[pidff->recent_effect_id].effect_type_id =
-+					pidff->recent.effect_type_id = efnum;
++			pidff->effect[pidff->active_effect_id].id =
++					pidff->active.id = j;
++			pidff->effect[pidff->active_effect_id].offset[0] = NULL;
++			pidff->effect[pidff->active_effect_id].offset[1] = NULL;
++			pidff->effect[pidff->active_effect_id].effect_type_id =
++					pidff->active.effect_type_id = efnum;
 +
-+			hid_dbg(pidff->hid, "upload id %d\n", pidff->recent.id);
++			hid_dbg(pidff->hid, "upload id %d\n", pidff->active.id);
 +			return 0;
  		}
 +		return -ENOSPC;
@@ -869,7 +861,7 @@
  	return -EIO;
  }
  
-@@ -512,7 +987,7 @@
+@@ -512,7 +983,7 @@
  {
  	struct pidff_device *pidff = dev->ff->private;
  
@@ -878,36 +870,35 @@
  
  	return 0;
  }
-@@ -522,9 +997,25 @@
+@@ -522,9 +993,24 @@
   */
  static void pidff_erase_pid(struct pidff_device *pidff, int pid_id)
  {
 -	pidff->block_free[PID_EFFECT_BLOCK_INDEX].value[0] = pid_id;
 -	hid_hw_request(pidff->hid, pidff->reports[PID_BLOCK_FREE],
 -			HID_REQ_SET_REPORT);
-+	struct pidff_memory_block *block, *b2;
++	struct list_head *pos, *temp;
++	struct pidff_memory_block *block;
 +
 +	if (IS_DEVICE_MANAGED(pidff)) {
 +		pidff->block_free[PID_EFFECT_BLOCK_INDEX].value[0] = pid_id;
 +		hid_hw_request(pidff->hid, pidff->reports[PID_BLOCK_FREE],
-+				HID_REQ_SET_REPORT);
-+	} else {
-+		block = pidff->memory;
-+		while (block) {
-+			b2 = block;
-+			block = block->next;
++					HID_REQ_SET_REPORT);
 +
-+			if (b2->block_index == pid_id) {
-+				hid_dbg(pidff->hid, "Block erased at 0x%x\n",
-+					b2->block_offset);
-+				pidff_free_memory_block(pidff, b2);
++	} else {
++		list_for_each_safe(pos, temp, &pidff->memory) {
++			block = list_entry(pos, struct pidff_memory_block, list);
++
++			if (block->block_index == pid_id) {
++				hid_dbg(pidff->hid, "Block erased at 0x%x\n", block->block_offset);
++				pidff_free_memory_block(pidff, block);
 +			}
 +		}
 +	}
  }
  
  /*
-@@ -533,16 +1024,20 @@
+@@ -533,16 +1019,20 @@
  static int pidff_erase_effect(struct input_dev *dev, int effect_id)
  {
  	struct pidff_device *pidff = dev->ff->private;
@@ -930,7 +921,7 @@
  	return 0;
  }
  
-@@ -553,32 +1048,46 @@
+@@ -553,32 +1043,43 @@
  			       struct ff_effect *old)
  {
  	struct pidff_device *pidff = dev->ff->private;
@@ -943,31 +934,31 @@
 +	int (*set_report_func)(struct pidff_device *, struct ff_effect *) =
 +			NULL;
 +	struct ff_envelope *envelope = NULL, *old_envelope = NULL;
-+
-+	if (!IS_LAZY_INITIALIZED(pidff))
-+	pidff_lazy_init(pidff, dev);
  
-+	pidff->recent_effect_id = effect->id;
-+	if (old) {
-+		pidff->recent.id = pidff->effect[effect->id].id;
-+		pidff->recent.offset[0] = pidff->effect[effect->id].offset[0];
-+		pidff->recent.offset[1] = pidff->effect[effect->id].offset[1];
+-	pidff->block_load[PID_EFFECT_BLOCK_INDEX].value[0] = 0;
++	pidff->active_effect_id = effect->id;
+ 	if (old) {
+-		pidff->block_load[PID_EFFECT_BLOCK_INDEX].value[0] =
+-			pidff->pid_id[effect->id];
++		pidff->active.id = pidff->effect[effect->id].id;
++		pidff->active.offset[0] = pidff->effect[effect->id].offset[0];
++		pidff->active.offset[1] = pidff->effect[effect->id].offset[1];
 +
 +		if (pidff_needs_set_effect(effect, old))
 +			needs_set_effect = 1;
 +	} else {
-+		pidff->recent.offset[0] = NULL;
-+		pidff->recent.offset[1] = NULL;
++		pidff->active.offset[0] = NULL;
++		pidff->active.offset[1] = NULL;
 +		needs_set_effect = 1;
 +	}
 +
-+#if 0
- 	pidff->block_load[PID_EFFECT_BLOCK_INDEX].value[0] = 0;
- 	if (old) {
- 		pidff->block_load[PID_EFFECT_BLOCK_INDEX].value[0] =
- 			pidff->pid_id[effect->id];
++	if(IS_DEVICE_MANAGED(pidff)) {
++		pidff->block_load[PID_EFFECT_BLOCK_INDEX].value[0] = 0;
++		if(old) {
++			pidff->block_load[PID_EFFECT_BLOCK_INDEX].value[0] =
++					pidff->active.id;
++		}
  	}
-+#endif
  
  	switch (effect->type) {
  	case FF_CONSTANT:
@@ -994,7 +985,7 @@
  		break;
  
  	case FF_PERIODIC:
-@@ -603,91 +1112,44 @@
+@@ -603,91 +1104,44 @@
  				hid_err(pidff->hid, "invalid waveform\n");
  				return -EINVAL;
  			}
@@ -1108,7 +1099,7 @@
  		break;
  
  	default:
-@@ -695,13 +1157,56 @@
+@@ -695,13 +1149,57 @@
  		return -EINVAL;
  	}
  
@@ -1140,13 +1131,14 @@
 +	}
 +
 +	if (!IS_DEVICE_MANAGED(pidff)) {
-+		if (!old || pidff->recent.offset[0] !=
++		if (!old || pidff->active.offset[0] !=
 +				pidff->effect[effect->id].offset[0] ||
-+				pidff->recent.offset[1] !=
-+				pidff->effect[effect->id].offset[1]) {
-+			pidff->recent.offset[0] =
++				pidff->active.offset[1] !=
++				pidff->effect[effect->id].offset[1] ||
++				needs_set_effect) {
++			pidff->active.offset[0] =
 +				pidff->effect[effect->id].offset[0];
-+			pidff->recent.offset[1] =
++			pidff->active.offset[1] =
 +				pidff->effect[effect->id].offset[1];
 +			pidff_set_effect_report(pidff, effect);
 +		}
@@ -1154,22 +1146,22 @@
  
  	hid_dbg(pidff->hid, "uploaded\n");
 -
-+	pidff->recent.id = -1;
-+	pidff->recent.offset[0]	= NULL;
-+	pidff->recent.offset[1] = NULL;
++	pidff->active.id = -1;
++	pidff->active.offset[0]	= NULL;
++	pidff->active.offset[1] = NULL;
  	return 0;
 +
 +fail:
 +	hid_dbg(pidff->hid, "upload failed\n");
-+	pidff_erase_pid(pidff, pidff->recent.id);
-+	pidff->recent.id = -1;
-+	pidff->recent.offset[0]	= NULL;
-+	pidff->recent.offset[1] = NULL;
++	pidff_erase_pid(pidff, pidff->active.id);
++	pidff->active.id = -1;
++	pidff->active.offset[0]	= NULL;
++	pidff->active.offset[1] = NULL;
 +	return error;
  }
  
  /*
-@@ -718,28 +1223,34 @@
+@@ -718,28 +1216,34 @@
  
  static void pidff_autocenter(struct pidff_device *pidff, u16 magnitude)
  {
@@ -1222,17 +1214,7 @@
  }
  
  /*
-@@ -749,6 +1260,9 @@
- {
- 	struct pidff_device *pidff = dev->ff->private;
- 
-+	if (!IS_LAZY_INITIALIZED(pidff))
-+		pidff_lazy_init(pidff, dev);
-+
- 	pidff_autocenter(pidff, magnitude);
- }
- 
-@@ -756,12 +1270,22 @@
+@@ -756,12 +1260,22 @@
   * Find fields from a report and fill a pidff_usage
   */
  static int pidff_find_fields(struct pidff_usage *usage, const u8 *table,
@@ -1257,7 +1239,7 @@
  		for (i = 0; i < report->maxfield; i++) {
  			if (report->field[i]->maxusage !=
  			    report->field[i]->report_count) {
-@@ -770,21 +1294,36 @@
+@@ -770,21 +1284,36 @@
  			}
  			for (j = 0; j < report->field[i]->maxusage; j++) {
  				if (report->field[i]->usage[j].hid ==
@@ -1299,7 +1281,7 @@
  			return -1;
  		}
  	}
-@@ -821,8 +1360,8 @@
+@@ -821,8 +1350,8 @@
  			continue;
  		ret = pidff_check_usage(report->field[0]->logical);
  		if (ret != -1) {
@@ -1310,7 +1292,7 @@
  			pidff->reports[ret] = report;
  			continue;
  		}
-@@ -841,8 +1380,8 @@
+@@ -841,8 +1370,8 @@
  		ret = pidff_check_usage(hid->collection[i - 1].usage);
  		if (ret != -1 && !pidff->reports[ret]) {
  			hid_dbg(hid,
@@ -1321,7 +1303,7 @@
  			pidff->reports[ret] = report;
  		}
  	}
-@@ -855,6 +1394,7 @@
+@@ -855,6 +1384,7 @@
  {
  	int i;
  
@@ -1329,7 +1311,7 @@
  	for (i = 0; i <= PID_REQUIRED_REPORTS; i++) {
  		if (!pidff->reports[i]) {
  			hid_dbg(pidff->hid, "%d missing\n", i);
-@@ -862,6 +1402,26 @@
+@@ -862,6 +1392,26 @@
  		}
  	}
  
@@ -1356,7 +1338,7 @@
  	return 1;
  }
  
-@@ -884,6 +1444,16 @@
+@@ -884,6 +1434,16 @@
  				return NULL;
  			}
  		}
@@ -1373,7 +1355,7 @@
  	}
  	return NULL;
  }
-@@ -913,7 +1483,6 @@
+@@ -913,7 +1473,6 @@
  #define PIDFF_FIND_SPECIAL_KEYS(keys, field, name) \
  	pidff_find_special_keys(pidff->keys, pidff->field, pidff_ ## name, \
  		sizeof(pidff_ ## name))
@@ -1381,7 +1363,7 @@
  /*
   * Find and check the special fields
   */
-@@ -921,9 +1490,6 @@
+@@ -921,9 +1480,6 @@
  {
  	hid_dbg(pidff->hid, "finding special fields\n");
  
@@ -1391,7 +1373,7 @@
  	pidff->set_effect_type =
  		pidff_find_special_field(pidff->reports[PID_SET_EFFECT],
  					 0x25, 1);
-@@ -933,16 +1499,23 @@
+@@ -933,16 +1489,23 @@
  	pidff->device_control =
  		pidff_find_special_field(pidff->reports[PID_DEVICE_CONTROL],
  					 0x96, 1);
@@ -1419,7 +1401,7 @@
  		hid_err(pidff->hid, "effect lists not found\n");
  		return -1;
  	}
-@@ -957,7 +1530,7 @@
+@@ -957,7 +1520,7 @@
  		return -1;
  	}
  
@@ -1428,7 +1410,7 @@
  		hid_err(pidff->hid, "block load status field not found\n");
  		return -1;
  	}
-@@ -973,18 +1546,27 @@
+@@ -973,18 +1536,27 @@
  
  	PIDFF_FIND_SPECIAL_KEYS(control_id, device_control, device_control);
  
@@ -1467,7 +1449,7 @@
  	}
  
  	if (PIDFF_FIND_SPECIAL_KEYS(operation_id, effect_operation_status,
-@@ -1005,13 +1587,17 @@
+@@ -1005,13 +1577,17 @@
  {
  	int i;
  
@@ -1492,7 +1474,7 @@
  		}
  	}
  
-@@ -1052,10 +1638,10 @@
+@@ -1052,10 +1628,10 @@
  
  }
  
@@ -1505,7 +1487,7 @@
  
  /*
   * Fill and check the pidff_usages
-@@ -1064,28 +1650,25 @@
+@@ -1064,28 +1640,25 @@
  {
  	int envelope_ok = 0;
  
@@ -1542,7 +1524,7 @@
  		envelope_ok = 1;
  
  	if (pidff_find_special_fields(pidff) || pidff_find_effects(pidff, dev))
-@@ -1105,13 +1688,13 @@
+@@ -1105,13 +1678,13 @@
  	}
  
  	if (test_bit(FF_CONSTANT, dev->ffbit) &&
@@ -1558,7 +1540,7 @@
  		hid_warn(pidff->hid, "unknown ramp effect layout\n");
  		clear_bit(FF_RAMP, dev->ffbit);
  	}
-@@ -1120,7 +1703,7 @@
+@@ -1120,7 +1693,7 @@
  	     test_bit(FF_DAMPER, dev->ffbit) ||
  	     test_bit(FF_FRICTION, dev->ffbit) ||
  	     test_bit(FF_INERTIA, dev->ffbit)) &&
@@ -1567,7 +1549,7 @@
  		hid_warn(pidff->hid, "unknown condition effect layout\n");
  		clear_bit(FF_SPRING, dev->ffbit);
  		clear_bit(FF_DAMPER, dev->ffbit);
-@@ -1129,16 +1712,36 @@
+@@ -1129,16 +1702,36 @@
  	}
  
  	if (test_bit(FF_PERIODIC, dev->ffbit) &&
@@ -1607,7 +1589,7 @@
  	return 0;
  }
  
-@@ -1148,7 +1751,8 @@
+@@ -1148,7 +1741,8 @@
  static void pidff_reset(struct pidff_device *pidff)
  {
  	struct hid_device *hid = pidff->hid;
@@ -1617,7 +1599,7 @@
  
  	pidff->device_control->value[0] = pidff->control_id[PID_RESET];
  	/* We reset twice as sometimes hid_wait_io isn't waiting long enough */
-@@ -1161,63 +1765,154 @@
+@@ -1161,63 +1755,132 @@
  		pidff->control_id[PID_ENABLE_ACTUATORS];
  	hid_hw_request(hid, pidff->reports[PID_DEVICE_CONTROL], HID_REQ_SET_REPORT);
  	hid_hw_wait(hid);
@@ -1647,7 +1629,7 @@
 +			return error;
 +		}
 +
-+		if (pidff->recent.id ==
++		if (pidff->active.id ==
 +				pidff->block_load[PID_EFFECT_BLOCK_INDEX].
 +				field->logical_minimum + 1) {
 +			pidff_autocenter(pidff, 0xffff);
@@ -1657,45 +1639,23 @@
 +				"device has unknown autocenter control method\n");
 +		}
 +
-+		pidff_erase_pid(pidff, pidff->recent.id);
-+	} else {
-+		/*
-+		 * In driver managed mode, there is no way of knowing if a
-+		 * pre-configured spring effect exists or not, so if spring
-+		 * is supported, make first effect autocenter
-+		 */
-+		 if (!test_bit(FF_SPRING, dev->ffbit))
-+			return 0;
-+
-+/*
-+		error = pidff_request_effect_upload(pidff,
-+				pidff->type_id[PID_SPRING]);
-+		if (error)
-+			return error;
-+
-+		autocenter.type = FF_SPRING;
-+		autocenter.
-+
-+		pidff_set_condition_report(pidff, effect);
-+		pidff_set_effect_report(pidff, effect);
-+*/
-+		/* TODO: Not yet supported... */
-+		return 0;
++		pidff_erase_pid(pidff, pidff->active.id);
 +	}
 +
-+	return 0;
++	/*
++	 * In driver managed mode, there is no way of knowing if a
++	 * pre-configured spring effect exists or not...
++	 */
 +
++	return 0;
 +}
 +
 +/*
-+ * Do a "lazy" initialization, because reports are discarded
-+ * until probe (init) is done
++ * Do initialization that requires hw requests
 + */
-+static void pidff_lazy_init(struct pidff_device *pidff, struct input_dev *dev)
++static void pidff_init_hw_requests(struct pidff_device *pidff, struct input_dev *dev)
 +{
 +	int i = 0;
-+
-+	set_bit(PID_IS_LAZY_INITIALIZED, &pidff->flags);
  
  	/* pool report is sometimes messed up, refetch it */
 -	hid_hw_request(hid, pidff->reports[PID_POOL], HID_REQ_GET_REPORT);
@@ -1722,7 +1682,7 @@
  		}
  	}
 -}
--
+ 
 -/*
 - * Test if autocenter modification is using the supported method
 - */
@@ -1730,7 +1690,7 @@
 -				  struct input_dev *dev)
 -{
 -	int error;
- 
+-
 -	/*
 -	 * Let's find out if autocenter modification is supported
 -	 * Specification doesn't specify anything, so we request an
@@ -1738,18 +1698,6 @@
 -	 * effect id was one above the minimum, then we assume the first
 -	 * effect id is a built-in spring type effect used for autocenter
 -	 */
--
--	error = pidff_request_effect_upload(pidff, 1);
--	if (error) {
--		hid_err(pidff->hid, "upload request failed\n");
--		return error;
--	}
--
--	if (pidff->block_load[PID_EFFECT_BLOCK_INDEX].value[0] ==
--	    pidff->block_load[PID_EFFECT_BLOCK_INDEX].field->logical_minimum + 1) {
--		pidff_autocenter(pidff, 0xffff);
--		set_bit(FF_AUTOCENTER, dev->ffbit);
--	} else {
 +	for (i = 0; i < PID_EFFECTS_MAX; i++) {
 +		pidff->effect[i].id = -1;
 +		pidff->effect[i].offset[0] = NULL;
@@ -1782,34 +1730,45 @@
 +	    pidff->pool[PID_DEVICE_MANAGED_POOL].value[0] == 0) {*/
 +	if (!pidff->pool[PID_DEVICE_MANAGED_POOL].value ||
 +	    pidff->pool[PID_DEVICE_MANAGED_POOL].value[0] == 0) {
- 		hid_notice(pidff->hid,
--			   "device has unknown autocenter control method\n");
++		hid_notice(pidff->hid,
 +			   "device does not support device managed pool\n");
-+
+ 
+-	error = pidff_request_effect_upload(pidff, 1);
+-	if (error) {
+-		hid_err(pidff->hid, "upload request failed\n");
+-		return error;
 +		clear_bit(PID_SUPPORTS_DEVICE_MANAGED, &pidff->flags);
  	}
  
--	pidff_erase_pid(pidff,
--			pidff->block_load[PID_EFFECT_BLOCK_INDEX].value[0]);
+-	if (pidff->block_load[PID_EFFECT_BLOCK_INDEX].value[0] ==
+-	    pidff->block_load[PID_EFFECT_BLOCK_INDEX].field->logical_minimum + 1) {
+-		pidff_autocenter(pidff, 0xffff);
+-		set_bit(FF_AUTOCENTER, dev->ffbit);
+-	} else {
+-		hid_notice(pidff->hid,
+-			   "device has unknown autocenter control method\n");
+-	}
 +	if (pidff->max_effects > PID_EFFECTS_MAX)
 +		pidff->max_effects = PID_EFFECTS_MAX;
  
--	return 0;
+-	pidff_erase_pid(pidff,
+-			pidff->block_load[PID_EFFECT_BLOCK_INDEX].value[0]);
 +	if (pidff->pool[PID_SIMULTANEOUS_MAX].value)
 +		hid_dbg(pidff->hid, "max simultaneous effects is %d\n",
 +			pidff->pool[PID_SIMULTANEOUS_MAX].value[0]);
  
-+	pidff_check_autocenter(pidff, dev);
-+
+-	return 0;
 +	if (test_bit(FF_GAIN, dev->ffbit)) {
 +		pidff_set(&pidff->device_gain[PID_DEVICE_GAIN_FIELD], 0xffff);
 +		hid_hw_request(pidff->hid, pidff->reports[PID_DEVICE_GAIN],
 +				     HID_REQ_SET_REPORT);
 +	}
+ 
++	pidff_check_autocenter(pidff, dev);
  }
  
  /*
-@@ -1230,7 +1925,6 @@
+@@ -1230,7 +1893,6 @@
  						struct hid_input, list);
  	struct input_dev *dev = hidinput->input;
  	struct ff_device *ff;
@@ -1817,18 +1776,19 @@
  	int error;
  
  	hid_dbg(hid, "starting pid init\n");
-@@ -1245,6 +1939,10 @@
+@@ -1244,7 +1906,11 @@
+ 	if (!pidff)
  		return -ENOMEM;
  
++	INIT_LIST_HEAD(&pidff->memory);
++
  	pidff->hid = hid;
 +	pidff->flags = 0xff;	/* Check support later */
-+	pidff->recent.id = 0;
-+
-+	clear_bit(PID_IS_LAZY_INITIALIZED, &pidff->flags);
++	pidff->active.id = 0;
  
  	hid_device_io_start(hid);
  
-@@ -1263,41 +1961,25 @@
+@@ -1263,41 +1929,28 @@
  
  	pidff_reset(pidff);
  
@@ -1850,7 +1810,9 @@
 -
 -	if (max_effects > PID_EFFECTS_MAX)
 -		max_effects = PID_EFFECTS_MAX;
--
++	/* Do the initialization part which requires hw requests */
++	pidff_init_hw_requests(pidff, dev);
+ 
 -	if (pidff->pool[PID_SIMULTANEOUS_MAX].value)
 -		hid_dbg(hid, "max simultaneous effects is %d\n",
 -			pidff->pool[PID_SIMULTANEOUS_MAX].value[0]);
@@ -1864,7 +1826,7 @@
 -		hid_notice(hid,
 -			   "device does not support device managed pool\n");
 -		goto fail;
-+	/* This one should work with device managed devices */
++	/* Determine max effects, this one should work with device managed devices */
 +	if (pidff->block_load[PID_EFFECT_BLOCK_INDEX].field) {
 +		pidff->max_effects =
 +			pidff->block_load[PID_EFFECT_BLOCK_INDEX].field->logical_maximum -
@@ -1887,7 +1849,7 @@
  	if (error)
  		goto fail;
  
-@@ -1316,8 +1998,23 @@
+@@ -1316,8 +1969,23 @@
  	return 0;
  
   fail:
