@@ -246,8 +246,8 @@ struct pidff_device {
 	unsigned long flags;
 
 	struct pidff_info effect[PID_EFFECTS_MAX];
-	struct pidff_info recent;
-	int recent_effect_id;
+	struct pidff_info current;
+	int current_effect_id;
 
 	/* struct pidff_memory_block *memory; */
 	struct list_head memory;
@@ -362,7 +362,7 @@ static struct pidff_memory_block *pidff_allocate_memory_block(
 		struct pidff_device *pidff, int size)
 {
 	struct pidff_memory_block *block, *new_block;
-	int offset, free;
+	int offset, free_mem;
 
 	if (!size)
 		return NULL;
@@ -384,7 +384,7 @@ static struct pidff_memory_block *pidff_allocate_memory_block(
 		offset += offset % pidff->alignment;
 		offset *= pidff->max_effects;
 
-		new_block->block_index = pidff->recent.id;
+		new_block->block_index = pidff->current.id;
 		new_block->block_offset = offset;
 		new_block->size = size;
 
@@ -397,17 +397,17 @@ static struct pidff_memory_block *pidff_allocate_memory_block(
 	/* Try to find first large enough memory slot */
 	list_for_each_entry(block, &pidff->memory, list) {
 		if (!list_is_last(&block->list, &pidff->memory)) {
-			free = list_next_entry(block, list)->block_offset -
+			free_mem = list_next_entry(block, list)->block_offset -
 					block->block_offset - block->size;
 
 			/* Found large enough memory slot */
-			if (free >= size) {
+			if (free_mem >= size) {
 				new_block = kzalloc(sizeof(struct pidff_memory_block), GFP_KERNEL);
 				if (!new_block)
 					return NULL;
 
 				offset = block->block_offset + block->size;
-				new_block->block_index = pidff->recent.id;
+				new_block->block_index = pidff->current.id;
 				new_block->block_offset = offset;
 				new_block->size = size;
 
@@ -428,7 +428,7 @@ static struct pidff_memory_block *pidff_allocate_memory_block(
 				return NULL;
 
 			offset = block->block_offset + block->size;
-			new_block->block_index = pidff->recent.id;
+			new_block->block_index = pidff->current.id;
 			new_block->block_offset = offset;
 			new_block->size = size;
 
@@ -589,9 +589,9 @@ static int pidff_set_envelope_report(struct pidff_device *pidff,
 
 	if (IS_DEVICE_MANAGED(pidff)) {
 		pidff->set_envelope[PID_EFFECT_BLOCK_INDEX].value[0] =
-		    pidff->recent.id;
+		    pidff->current.id;
 	} else {
-		offset = pidff_get_or_allocate_block(pidff, pidff->recent.id,
+		offset = pidff_get_or_allocate_block(pidff, pidff->current.id,
 				pidff_report_store_size(pidff,
 				PID_SET_ENVELOPE), 2);
 		if (!offset)
@@ -643,9 +643,9 @@ static int pidff_set_constant_force_report(struct pidff_device *pidff,
 
 	if (IS_DEVICE_MANAGED(pidff)) {
 		pidff->set_constant[PID_EFFECT_BLOCK_INDEX].value[0] =
-			pidff->recent.id;
+			pidff->current.id;
 	} else {
-		offset = pidff_get_or_allocate_block(pidff, pidff->recent.id,
+		offset = pidff_get_or_allocate_block(pidff, pidff->current.id,
 				pidff_report_store_size(pidff,
 				PID_SET_CONSTANT), 1);
 		if (!offset)
@@ -678,21 +678,21 @@ static void pidff_set_effect_report(struct pidff_device *pidff,
 				    struct ff_effect *effect)
 {
 	pidff->set_effect[PID_EFFECT_BLOCK_INDEX].value[0] =
-		pidff->recent.id;
+		pidff->current.id;
 
 	if (IS_DEVICE_MANAGED(pidff)) {
 		pidff->set_effect_type->value[0] =
 			pidff->create_new_effect_type->value[0];
 	} else {
-		pidff->set_effect_type->value[0] = pidff->recent.effect_type_id;
-		if (pidff->recent.offset[0])
-			pidff->block_offset[0].value[0] = pidff->recent.
+		pidff->set_effect_type->value[0] = pidff->current.effect_type_id;
+		if (pidff->current.offset[0])
+			pidff->block_offset[0].value[0] = pidff->current.
 					offset[0]->block_offset;
 		else
 			pidff->block_offset[0].value[0] = 0;
 
-		if (pidff->recent.offset[1])
-			pidff->block_offset[1].value[0] = pidff->recent.
+		if (pidff->current.offset[1])
+			pidff->block_offset[1].value[0] = pidff->current.
 					offset[1]->block_offset;
 		else
 			pidff->block_offset[1].value[0] = 0;
@@ -741,9 +741,9 @@ static int pidff_set_periodic_report(struct pidff_device *pidff,
 
 	if (IS_DEVICE_MANAGED(pidff)) {
 		pidff->set_periodic[PID_EFFECT_BLOCK_INDEX].value[0] =
-			pidff->recent.id;
+			pidff->current.id;
 	} else {
-		offset = pidff_get_or_allocate_block(pidff, pidff->recent.id,
+		offset = pidff_get_or_allocate_block(pidff, pidff->current.id,
 				pidff_report_store_size(pidff,
 				PID_SET_PERIODIC), 1);
 		if (!offset)
@@ -786,7 +786,7 @@ static int pidff_set_condition_report(struct pidff_device *pidff,
 
 	if (IS_DEVICE_MANAGED(pidff))
 		pidff->set_condition[PID_EFFECT_BLOCK_INDEX].value[0] =
-			pidff->recent.id;
+			pidff->current.id;
 
 	for (i = 0; i < 2; i++) {
 		if (IS_DEVICE_MANAGED(pidff)) {
@@ -794,7 +794,7 @@ static int pidff_set_condition_report(struct pidff_device *pidff,
 						i;
 		} else {
 			offset = pidff_get_or_allocate_block(pidff,
-				pidff->recent.id, pidff_report_store_size(pidff,
+				pidff->current.id, pidff_report_store_size(pidff,
 				PID_SET_CONDITION), i+1);
 			if (!offset)
 				return -ENOSPC;
@@ -856,9 +856,9 @@ static int pidff_set_ramp_force_report(struct pidff_device *pidff,
 
 	if (IS_DEVICE_MANAGED(pidff)) {
 		pidff->set_ramp[PID_EFFECT_BLOCK_INDEX].value[0] =
-			pidff->recent.id;
+			pidff->current.id;
 	} else {
-		offset = pidff_get_or_allocate_block(pidff, pidff->recent.id,
+		offset = pidff_get_or_allocate_block(pidff, pidff->current.id,
 				pidff_report_store_size(pidff, PID_SET_RAMP),
 				1);
 		if (!offset)
@@ -920,7 +920,7 @@ static int pidff_request_effect_upload(struct pidff_device *pidff, int efnum)
 					pidff->block_load[PID_RAM_POOL_AVAILABLE].value ?
 					pidff->block_load[PID_RAM_POOL_AVAILABLE].value[0] : -1);
 
-				pidff->recent.id = pidff->
+				pidff->current.id = pidff->
 					block_load[PID_EFFECT_BLOCK_INDEX].
 					value[0];
 				return 0;
@@ -941,14 +941,14 @@ static int pidff_request_effect_upload(struct pidff_device *pidff, int efnum)
 			if (pidff->effect[j].id > -1)
 				continue;
 
-			pidff->effect[pidff->recent_effect_id].id =
-					pidff->recent.id = j;
-			pidff->effect[pidff->recent_effect_id].offset[0] = NULL;
-			pidff->effect[pidff->recent_effect_id].offset[1] = NULL;
-			pidff->effect[pidff->recent_effect_id].effect_type_id =
-					pidff->recent.effect_type_id = efnum;
+			pidff->effect[pidff->current_effect_id].id =
+					pidff->current.id = j;
+			pidff->effect[pidff->current_effect_id].offset[0] = NULL;
+			pidff->effect[pidff->current_effect_id].offset[1] = NULL;
+			pidff->effect[pidff->current_effect_id].effect_type_id =
+					pidff->current.effect_type_id = efnum;
 
-			hid_dbg(pidff->hid, "upload id %d\n", pidff->recent.id);
+			hid_dbg(pidff->hid, "upload id %d\n", pidff->current.id);
 			return 0;
 		}
 		return -ENOSPC;
@@ -1051,17 +1051,17 @@ static int pidff_upload_effect(struct input_dev *dev, struct ff_effect *effect,
 			NULL;
 	struct ff_envelope *envelope = NULL, *old_envelope = NULL;
 
-	pidff->recent_effect_id = effect->id;
+	pidff->current_effect_id = effect->id;
 	if (old) {
-		pidff->recent.id = pidff->effect[effect->id].id;
-		pidff->recent.offset[0] = pidff->effect[effect->id].offset[0];
-		pidff->recent.offset[1] = pidff->effect[effect->id].offset[1];
+		pidff->current.id = pidff->effect[effect->id].id;
+		pidff->current.offset[0] = pidff->effect[effect->id].offset[0];
+		pidff->current.offset[1] = pidff->effect[effect->id].offset[1];
 
 		if (pidff_needs_set_effect(effect, old))
 			needs_set_effect = 1;
 	} else {
-		pidff->recent.offset[0] = NULL;
-		pidff->recent.offset[1] = NULL;
+		pidff->current.offset[0] = NULL;
+		pidff->current.offset[1] = NULL;
 		needs_set_effect = 1;
 	}
 
@@ -1069,7 +1069,7 @@ static int pidff_upload_effect(struct input_dev *dev, struct ff_effect *effect,
 		pidff->block_load[PID_EFFECT_BLOCK_INDEX].value[0] = 0;
 		if(old) {
 			pidff->block_load[PID_EFFECT_BLOCK_INDEX].value[0] =
-					pidff->recent.id;
+					pidff->current.id;
 		}
 	}
 
@@ -1174,31 +1174,31 @@ static int pidff_upload_effect(struct input_dev *dev, struct ff_effect *effect,
 	}
 
 	if (!IS_DEVICE_MANAGED(pidff)) {
-		if (!old || pidff->recent.offset[0] !=
+		if (!old || pidff->current.offset[0] !=
 				pidff->effect[effect->id].offset[0] ||
-				pidff->recent.offset[1] !=
+				pidff->current.offset[1] !=
 				pidff->effect[effect->id].offset[1] ||
 				needs_set_effect) {
-			pidff->recent.offset[0] =
+			pidff->current.offset[0] =
 				pidff->effect[effect->id].offset[0];
-			pidff->recent.offset[1] =
+			pidff->current.offset[1] =
 				pidff->effect[effect->id].offset[1];
 			pidff_set_effect_report(pidff, effect);
 		}
 	}
 
 	hid_dbg(pidff->hid, "uploaded\n");
-	pidff->recent.id = -1;
-	pidff->recent.offset[0]	= NULL;
-	pidff->recent.offset[1] = NULL;
+	pidff->current.id = -1;
+	pidff->current.offset[0]	= NULL;
+	pidff->current.offset[1] = NULL;
 	return 0;
 
 fail:
 	hid_dbg(pidff->hid, "upload failed\n");
-	pidff_erase_pid(pidff, pidff->recent.id);
-	pidff->recent.id = -1;
-	pidff->recent.offset[0]	= NULL;
-	pidff->recent.offset[1] = NULL;
+	pidff_erase_pid(pidff, pidff->current.id);
+	pidff->current.id = -1;
+	pidff->current.offset[0]	= NULL;
+	pidff->current.offset[1] = NULL;
 	return error;
 }
 
@@ -1781,7 +1781,7 @@ static int pidff_check_autocenter(struct pidff_device *pidff,
 			return error;
 		}
 
-		if (pidff->recent.id ==
+		if (pidff->current.id ==
 				pidff->block_load[PID_EFFECT_BLOCK_INDEX].
 				field->logical_minimum + 1) {
 			pidff_autocenter(pidff, 0xffff);
@@ -1791,7 +1791,7 @@ static int pidff_check_autocenter(struct pidff_device *pidff,
 				"device has unknown autocenter control method\n");
 		}
 
-		pidff_erase_pid(pidff, pidff->recent.id);
+		pidff_erase_pid(pidff, pidff->current.id);
 	}
 
 	/*
@@ -1910,7 +1910,7 @@ int hid_pidff_init(struct hid_device *hid)
 
 	pidff->hid = hid;
 	pidff->flags = 0xff;	/* Check support later */
-	pidff->recent.id = 0;
+	pidff->current.id = 0;
 
 	hid_device_io_start(hid);
 
