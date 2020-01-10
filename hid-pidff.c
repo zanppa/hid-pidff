@@ -895,7 +895,6 @@ static int pidff_needs_set_ramp(struct ff_effect *effect, struct ff_effect *old)
 static int pidff_request_effect_upload(struct pidff_device *pidff, int efnum)
 {
 	int j;
-	int used[PID_EFFECTS_MAX] = {0};
 
 	if (IS_DEVICE_MANAGED(pidff)) {
 		pidff->create_new_effect_type->value[0] = efnum;
@@ -938,12 +937,8 @@ static int pidff_request_effect_upload(struct pidff_device *pidff, int efnum)
 
 	} else {
 		/* Driver managed mode, allocate a new id if any is available */
-		for (j = 0; j < pidff->max_effects; j++)
-			if (pidff->effect[j].id > -1)
-				used[pidff->effect[j].id] = 1;
-
 		for (j = 0; j < pidff->max_effects; j++) {
-			if (used[j])
+			if (pidff->effect[j].id > -1)
 				continue;
 
 			pidff->effect[pidff->recent_effect_id].id =
@@ -1797,33 +1792,14 @@ static int pidff_check_autocenter(struct pidff_device *pidff,
 		}
 
 		pidff_erase_pid(pidff, pidff->recent.id);
-	} else {
-		/*
-		 * In driver managed mode, there is no way of knowing if a
-		 * pre-configured spring effect exists or not, so if spring
-		 * is supported, make first effect autocenter
-		 */
-		 if (!test_bit(FF_SPRING, dev->ffbit))
-			return 0;
-
-/*
-		error = pidff_request_effect_upload(pidff,
-				pidff->type_id[PID_SPRING]);
-		if (error)
-			return error;
-
-		autocenter.type = FF_SPRING;
-		autocenter.
-
-		pidff_set_condition_report(pidff, effect);
-		pidff_set_effect_report(pidff, effect);
-*/
-		/* TODO: Not yet supported... */
-		return 0;
 	}
 
-	return 0;
+	/*
+	 * In driver managed mode, there is no way of knowing if a
+	 * pre-configured spring effect exists or not...
+	 */
 
+	return 0;
 }
 
 /*
