@@ -11,6 +11,13 @@
 
 #define DEBUG
 
+/* Enable this to debug driver managed memory pool allocations */
+/* #define DEBUG_MEM_ALLOC */
+
+/* Enable this to debug scaling of parameters */
+/* #define DEBUG_SCALING */
+
+
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
 #include <linux/input.h>
@@ -285,7 +292,7 @@ static int pidff_report_store_size(struct pidff_device *pidff, int report)
 
 	size = pidff->report_size[report];
 	if (size) {
-		hid_dbg(pidff->hid, "Report %d size %d.\n", report, size);
+		/* hid_dbg(pidff->hid, "Report %d size %d.\n", report, size); */
 		return size;
 	}
 
@@ -412,9 +419,11 @@ static struct pidff_memory_block *pidff_allocate_memory_block(
 		new_block->size = size;
 
 		pidff->pid_used_ram = offset + size;
+#ifdef DEBUG_MEM_ALLOC
 		hid_dbg(pidff->hid, "First block allocated at 0x%x, size %d, ram used %d\n",
 			new_block->block_offset, new_block->size,
 			pidff->pid_used_ram);
+#endif
 		return new_block;
 	}
 
@@ -439,10 +448,12 @@ static struct pidff_memory_block *pidff_allocate_memory_block(
 
 				pidff->pid_used_ram += size;
 
+#ifdef DEBUG_MEM_ALLOC
 				hid_dbg(pidff->hid, "Block allocated at 0x%x size %d, ram used%d\n",
 					new_block->block_offset,
 					new_block->size,
 					pidff->pid_used_ram);
+#endif
 				return new_block;
 			}
 
@@ -462,9 +473,11 @@ static struct pidff_memory_block *pidff_allocate_memory_block(
 
 			pidff->pid_used_ram += size;
 
+#ifdef DEBUG_MEM_ALLOC
 			hid_dbg(pidff->hid, "Block allocated at 0x%x size %d, ram used %d\n",
 				new_block->block_offset, size,
 				pidff->pid_used_ram);
+#endif
 			return new_block;
 
 		} else {
@@ -501,8 +514,10 @@ static void pidff_free_memory_block(struct pidff_device *pidff,
 {
 	list_del(&block->list);
 	pidff->pid_used_ram -= block->size;
+#ifdef DEBUG_MEM_ALLOC
 	hid_dbg(pidff->hid, "Block freed from 0x%x, ram used %d\n",
 		block->block_offset, pidff->pid_used_ram);
+#endif
 	kfree(block);
 }
 
@@ -537,16 +552,20 @@ static int pidff_get_or_allocate_block(struct pidff_device *pidff,
 				block->offset_num = n;
 				pidff->effect[i].offset[n] = block;
 
+#ifdef DEBUG_MEM_ALLOC
 				hid_dbg(pidff->hid, "New block allocated");
-
+#endif
 			} else if (pidff->effect[i].offset[n]->size == size) {
 				/* Block can be re-used */
 				offset = pidff->effect[i].offset[n]->block_offset;
+#ifdef DEBUG_MEM_ALLOC
 				hid_dbg(pidff->hid, "Block re-used");
-
+#endif
 			} else {
 				/* Block was wrong size */
+#ifdef DEBUG_MEM_ALLOC
 				hid_dbg(pidff->hid, "Wrong size %d!=%d block re-allocated", pidff->effect[i].offset[n]->size, size);
+#endif
 				pidff_free_memory_block(pidff, pidff->effect[i].offset[n]);
 				block = pidff_allocate_memory_block(pidff, size);
 				if (!block)
@@ -556,8 +575,10 @@ static int pidff_get_or_allocate_block(struct pidff_device *pidff,
 				block->offset_num = n;
 				pidff->effect[i].offset[n] = block;
 			}
+#ifdef DEBUG_MEM_ALLOC
 			hid_dbg(pidff->hid, "Block for %d (%d) at 0x%x\n",
 				effect_id, n+1, offset);
+#endif
 			return offset;
 		}
 	}
@@ -588,7 +609,9 @@ static void pidff_set(struct pidff_usage *usage, u16 value)
 	if (!usage)
 		return;
 	usage->value[0] = pidff_rescale(value, 0xffff, usage->field);
+#ifdef DEBUG_SCALING
 	pr_debug("calculated from %d to %d\n", value, usage->value[0]);
+#endif
 }
 
 static void pidff_set_signed(struct pidff_usage *usage, s16 value)
@@ -603,7 +626,9 @@ static void pidff_set_signed(struct pidff_usage *usage, s16 value)
 			usage->value[0] =
 			    pidff_rescale(value, 0x7fff, usage->field);
 	}
+#ifdef DEBUG_SCALING
 	pr_debug("calculated from %d to %d\n", value, usage->value[0]);
+#endif
 }
 
 /*
@@ -639,9 +664,11 @@ static int pidff_set_envelope_report(struct pidff_device *pidff,
 	pidff->set_envelope[PID_ATTACK_TIME].value[0] = envelope->attack_length;
 	pidff->set_envelope[PID_FADE_TIME].value[0] = envelope->fade_length;
 
+#ifdef DEBUG_SCALING
 	hid_dbg(pidff->hid, "attack %u => %d\n",
 		envelope->attack_level,
 		pidff->set_envelope[PID_ATTACK_LEVEL].value[0]);
+#endif
 
 	hid_hw_request(pidff->hid, pidff->reports[PID_SET_ENVELOPE],
 		HID_REQ_SET_REPORT);
@@ -1032,7 +1059,9 @@ static void pidff_erase_pid(struct pidff_device *pidff, int pid_id)
 			block = list_entry(pos, struct pidff_memory_block, list);
 
 			if (block->block_index == pid_id) {
+#ifdef DEBUG_MEM_ALLOC
 				hid_dbg(pidff->hid, "Block erased at 0x%x\n", block->block_offset);
+#endif
 				pidff_free_memory_block(pidff, block);
 			}
 		}
@@ -1214,7 +1243,7 @@ static int pidff_upload_effect(struct input_dev *dev, struct ff_effect *effect,
 		}
 	}
 
-	hid_dbg(pidff->hid, "uploaded\n");
+	/* hid_dbg(pidff->hid, "uploaded\n"); */
 	pidff->active.id = -1;
 	pidff->active.offset[0]	= NULL;
 	pidff->active.offset[1] = NULL;
