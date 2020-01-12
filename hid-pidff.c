@@ -1846,7 +1846,7 @@ static void pidff_init_hw_requests(struct pidff_device *pidff, struct input_dev 
 	if (pidff->pool[PID_SIMULTANEOUS_MAX].value) {
 		while (pidff->pool[PID_SIMULTANEOUS_MAX].value[0] < 2) {
 			if (i++ > 2) {
-				hid_warn(pidff->hid,
+				hid_notice(pidff->hid,
 					 "device reports %d simultaneous effects\n",
 					 pidff->pool[PID_SIMULTANEOUS_MAX].value[0]);
 				break;
@@ -1890,7 +1890,7 @@ static void pidff_init_hw_requests(struct pidff_device *pidff, struct input_dev 
 	    pidff->pool[PID_DEVICE_MANAGED_POOL].value[0] == 0) {*/
 	if (!pidff->pool[PID_DEVICE_MANAGED_POOL].value ||
 	    pidff->pool[PID_DEVICE_MANAGED_POOL].value[0] == 0) {
-		hid_notice(pidff->hid,
+		hid_dbg(pidff->hid,
 			   "device does not support device managed pool\n");
 
 		clear_bit(PID_SUPPORTS_DEVICE_MANAGED, &pidff->flags);
@@ -1900,7 +1900,7 @@ static void pidff_init_hw_requests(struct pidff_device *pidff, struct input_dev 
 		pidff->max_effects = PID_EFFECTS_MAX;
 
 	if (pidff->pool[PID_SIMULTANEOUS_MAX].value)
-		hid_dbg(pidff->hid, "max simultaneous effects is %d\n",
+		hid_notice(pidff->hid, "max simultaneous effects is %d\n",
 			pidff->pool[PID_SIMULTANEOUS_MAX].value[0]);
 
 	if (test_bit(FF_GAIN, dev->ffbit)) {
