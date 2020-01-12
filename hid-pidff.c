@@ -293,8 +293,12 @@ static int pidff_report_store_size(struct pidff_device *pidff, int report)
 	hid_warn(pidff->hid, "Calculating size for report %d.\n", report);
 	switch (report) {
 	case PID_SET_EFFECT:
-		pidff->report_size[report] = pidff_calculate_report_store_size(
-			pidff->reports[PID_SET_EFFECT], pidff->set_effect);
+		/* Calculation removed since it seemed to cause issues
+		 * pidff->report_size[report] = pidff_calculate_report_store_size(
+		 *	pidff->reports[PID_SET_EFFECT], pidff->set_effect);
+		 */
+		/* If set report is not defined, set it to zero (not stored in pool) */
+		pidff->report_size[report] = 0;
 		break;
 	case PID_SET_ENVELOPE:
 		pidff->report_size[report] = pidff_calculate_report_store_size(
@@ -321,6 +325,7 @@ static int pidff_report_store_size(struct pidff_device *pidff, int report)
 		hid_dbg(pidff->hid, "Unknown report size queried\n");
 		return 0;
 	};
+	hid_warn(pidff->hid, "Calculated to be %d bytes.\n", pidff->report_size[report]);
 	return pidff->report_size[report];
 }
 
@@ -386,8 +391,21 @@ static struct pidff_memory_block *pidff_allocate_memory_block(
 		list_add(&new_block->list, &pidff->memory);
 
 		offset = pidff_report_store_size(pidff, PID_SET_EFFECT);
-		offset += offset % pidff->alignment;
-		offset *= pidff->max_effects;
+		if (offset == 0) {
+			/* If SET_EFFECT report size is not defined, assume they
+			 * are not stored in pool and blocks can be stored at the
+			 * beginning of pool. However address 0 does not seem to
+			 * work so starting at first aligned offset.
+			 */
+			offset = pidff->alignment;
+		} else {
+			/* If SET_EFFECT size was defined, assume they are stored
+			 * at the beginning of pool so the blocks must start after
+			 * the maximum amount of effects.
+			 */
+			offset += offset % pidff->alignment;
+			offset *= pidff->max_effects;
+		}
 
 		new_block->block_index = pidff->active.id;
 		new_block->block_offset = offset;
