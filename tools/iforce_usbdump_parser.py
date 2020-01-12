@@ -181,29 +181,29 @@ for packet in packets:
 
             # Common
             print('/* Time: {:.02f} */'.format(timestamp))
-            print('SDL_memset(&effect{}, 0, sizeof(SDL_HapticEffect));'.format(channel));
-            print('effect{}.type = {}'.format(channel, effect_sdl_name))
-            print('effect{}.{}.length = {};'.format(channel, effect_class, duration))
-            print('effect{}.{}.delay = {};'.format(channel, effect_class, delay))
-            print('effect{}.{}.button = {};'.format(channel, effect_class, trigger))
-            print('effect{}.{}.interval = {};'.format(channel, effect_class, timebetween))
+            print('SDL_memset(&effect[{}], 0, sizeof(SDL_HapticEffect));'.format(channel));
+            print('effect[{}].type = {}'.format(channel, effect_sdl_name))
+            print('effect[{}].{}.length = {};'.format(channel, effect_class, duration))
+            print('effect[{}].{}.delay = {};'.format(channel, effect_class, delay))
+            print('effect[{}].{}.button = {};'.format(channel, effect_class, trigger))
+            print('effect[{}].{}.interval = {};'.format(channel, effect_class, timebetween))
 
             # TODO: Should maybe take axis into account, but so far the direction has
             # always been more accurate, even if axis = X, direction may be 225 degrees or so
-            print('effect{}.{}.direction.type = SDL_HAPTIC_POLAR;'.format(channel, effect_class))
-            print('effect{}.{}.direction.dir[0] = {};'.format(channel, effect_class, int(direction * 100)))
+            print('effect[{}].{}.direction.type = SDL_HAPTIC_POLAR;'.format(channel, effect_class))
+            print('effect[{}].{}.direction.dir[0] = {};'.format(channel, effect_class, int(direction * 100)))
 
             # Type dependent
             if address1 != 0xffff and address1 in sdl_params:
                 for item in sdl_params[address1]:
-                    print('effect{}.{}{}'.format(channel, effect_class, item))
+                    print('effect[{}].{}{}'.format(channel, effect_class, item))
 
             # Attack and delay
             if effect_class != 'condition' and address2 != 0xffff and address2 in sdl_params:
                 for item in sdl_params[address2]:
-                    print('effect{}.{}{}'.format(channel, effect_class, item))
+                    print('effect[{}].{}{}'.format(channel, effect_class, item))
 
-            print('effect_id{} = SDL_HapticNewEffect(haptic, &effect{});'.format(channel, channel))
+            print('effect_id[{}] = SDL_HapticNewEffect(haptic, &effect[{}]);'.format(channel, channel))
 
 
     elif (data[0] == 0x02):     # Attack & fade
