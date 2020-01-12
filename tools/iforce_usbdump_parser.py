@@ -96,18 +96,18 @@ for packet in packets:
 #            print(timestamp, data)
 
             continue
-        
+
         channel = data[1]
-        effecttype = data[2]        
+        effecttype = data[2]
         trigger = data[3] & 0b00001111
-        axesbyte = (data[3] & 0b11110000) >> 3        
+        axesbyte = (data[3] & 0b11110000) >> 3
         duration = (data[5] << 8) + data[4]
         direction = data[6]
         timebetween = (data[8] << 8) + data[7]
         address1 = (data[10] << 8) + data[9]    # TODO: Or other order?
         address2 = (data[12] << 8) + data[11]   # TODO: Or other order?
-        delay = (data[13] << 8) + data[14]
-        
+        delay = (data[14] << 8) + data[13]
+
         if not sdl_out:
             if(effecttype == 0x00):
                 waveform = "Constant Force 0x00"
@@ -187,7 +187,7 @@ for packet in packets:
             print('effect{}.{}.delay = {};'.format(channel, effect_class, delay))
             print('effect{}.{}.button = {};'.format(channel, effect_class, trigger))
             print('effect{}.{}.interval = {};'.format(channel, effect_class, timebetween))
-            
+
             # TODO: Should maybe take axis into account, but so far the direction has
             # always been more accurate, even if axis = X, direction may be 225 degrees or so
             print('effect{}.{}.direction.type = SDL_HAPTIC_POLAR;'.format(channel, effect_class))
@@ -198,24 +198,24 @@ for packet in packets:
                 for item in sdl_params[address1]:
                     print('effect{}.{}{}'.format(channel, effect_class, item))
 
-            # Attack and delay            
+            # Attack and delay
             if effect_class != 'condition' and address2 != 0xffff and address2 in sdl_params:
                 for item in sdl_params[address2]:
                     print('effect{}.{}{}'.format(channel, effect_class, item))
 
-            print('effect_id{} = SDL_HapticNewEffect(haptic, &effect{})'.format(channel, channel))
+            print('effect_id{} = SDL_HapticNewEffect(haptic, &effect{});'.format(channel, channel))
 
 
     elif (data[0] == 0x02):     # Attack & fade
         if (len(data) < 0x08 + 1):
             continue
-        
+
         address = (data[2] << 8) + data[1]
         attack_duration = (data[4] <<8) + data[3]
         attack_level = signed(data[5])
         fade_duration = (data[7] << 8) + data[6]
         fade_level = signed(data[8])
-        
+
         if not sdl_out:
             print('{:.2f} Parameter: Attack and fade'.format(timestamp))
             print('\tAddress: {}'.format(address))
