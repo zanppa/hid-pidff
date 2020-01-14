@@ -752,7 +752,17 @@ static void pidff_set_effect_report(struct pidff_device *pidff,
 			pidff->block_offset[1].value[0] = 0;
 	}
 
-	pidff->set_effect[PID_DURATION].value[0] = effect->replay.length;
+	/* TODO: Linux input documentation does not seem to clearly state
+	 * what value should represent infinite effect duration. SDL2 uses
+	 * zero. However HID PID documentatin says that duration of
+	 * INFINITE (Null), and INFINITE is same as MAX value. I don't
+	 * know why there is (Null), probably reference error in print?
+	 * However writing -1 (max unsigned value) seems to work.
+	 */
+	if(effect->replay.length == 0)	// INFINITE -> play forever
+		pidff->set_effect[PID_DURATION].value[0] = -1;	// Should be 0xFFFFFFFF
+	else
+		pidff->set_effect[PID_DURATION].value[0] = effect->replay.length;
 	pidff->set_effect[PID_TRIGGER_BUTTON].value[0] = effect->trigger.button;
 	pidff->set_effect[PID_TRIGGER_REPEAT_INT].value[0] =
 		effect->trigger.interval;
