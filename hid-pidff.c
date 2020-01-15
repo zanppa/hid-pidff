@@ -236,6 +236,7 @@ struct pidff_device {
 	/* Special fields in set_effect */
 	struct hid_field *set_effect_type;
 	struct hid_field *effect_direction;
+	struct hid_field *axes_enable;
 
 	/* Special field in device_control */
 	struct hid_field *device_control;
@@ -781,11 +782,30 @@ static void pidff_set_effect_report(struct pidff_device *pidff,
 	if (pidff->set_effect_optional[PID_GAIN].value)
 		pidff->set_effect_optional[PID_GAIN].value[0] =
 			pidff->set_effect_optional[PID_GAIN].field->logical_maximum;
-	pidff->set_effect[PID_DIRECTION_ENABLE].value[0] = 1;
 
-	pidff->effect_direction->value[0] =
-		pidff_rescale(effect->direction, 0xffff,
-		pidff->effect_direction);
+	/* If two condition blocks are defined for condition type effects
+	 * (spring, damper, friction, inertia) then the direction should
+	 * not be used. If direction is enabled, then only 1 condition block
+	 * will be used towards defined direction.
+	 * Linux FF does not support using direction in this case, but rather
+	 * two conditions exist, one for X and one for Y so we disable this.
+	 */
+	if (effect->type != FF_SPRING && effect->type != FF_DAMPER &&
+		effect->type != FF_FRICTION && effect->type != FF_INERTIA) {
+
+		pidff->set_effect[PID_DIRECTION_ENABLE].value[0] = 1;
+
+		pidff->effect_direction->value[0] =
+			pidff_rescale(effect->direction, 0xffff,
+			pidff->effect_direction);
+	} else {
+		/* Disable direction and enable both axes. TODO: 2 axis supported */
+		pidff->set_effect[PID_DIRECTION_ENABLE].value[0] = 0;
+		if(pidff->axes_enable && pidff->axes_enable->report_count > 1) {
+			pidff->axes_enable->value[0] = 1;
+			pidff->axes_enable->value[1] = 1;
+		}
+	}
 
 	pidff->set_effect[PID_START_DELAY].value[0] = effect->replay.delay;
 
@@ -1568,6 +1588,9 @@ static int pidff_find_special_fields(struct pidff_device *pidff)
 	pidff->effect_direction =
 		pidff_find_special_field(pidff->reports[PID_SET_EFFECT],
 					 0x57, 0);
+	pidff->axes_enable =
+		pidff_find_special_field(pidff->reports[PID_SET_EFFECT],
+					 0x55, 0);
 	pidff->device_control =
 		pidff_find_special_field(pidff->reports[PID_DEVICE_CONTROL],
 					 0x96, 1);
@@ -1595,6 +1618,13 @@ static int pidff_find_special_fields(struct pidff_device *pidff)
 	if (!pidff->effect_direction) {
 		hid_err(pidff->hid, "direction field not found\n");
 		return -1;
+	}
+
+	if (!pidff->axes_enable) {
+		hid_err(pidff->hid, "axes enable field not found\n");
+		return -1;
+	} else {
+		hid_dbg(pidff->hid, "Axes enable count %d logical max %d\n", pidff->axes_enable->report_count, pidff->axes_enable->logical_maximum);
 	}
 
 	if (!pidff->device_control) {
