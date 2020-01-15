@@ -12,10 +12,10 @@
 #define DEBUG
 
 /* Enable this to debug driver managed memory pool allocations */
-/* #define DEBUG_MEM_ALLOC */
+#define DEBUG_MEM_ALLOC
 
 /* Enable this to debug scaling of parameters */
-/* #define DEBUG_SCALING */
+#define DEBUG_SCALING
 
 
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
@@ -404,7 +404,11 @@ static struct pidff_memory_block *pidff_allocate_memory_block(
 			 * beginning of pool. However address 0 does not seem to
 			 * work so starting at first aligned offset.
 			 */
-			offset = pidff->alignment;
+			if(pidff->block_offset[0].field) {
+				offset = pidff->block_offset[0].field->logical_minimum;
+			} else {
+				offset = pidff->alignment;	/* This is a hack... */
+			}
 		} else {
 			/* If SET_EFFECT size was defined, assume they are stored
 			 * at the beginning of pool so the blocks must start after
@@ -523,8 +527,10 @@ static void pidff_free_memory_block(struct pidff_device *pidff,
 
 /*
  * Get existing block or allocate a new block for effect info.
- * n is the axis number used.
- * Returns the offset or 0 on error.
+ * n is which block offset/axis is used.
+ * 1 is magnitude, period, ramp or X axis
+ * 2 is envelope or Y axis
+ * Returns the offset or -1 on error.
  */
 static int pidff_get_or_allocate_block(struct pidff_device *pidff,
 		int effect_id, int size, int n)
@@ -535,7 +541,7 @@ static int pidff_get_or_allocate_block(struct pidff_device *pidff,
 	/* Offsets start from 1..., scale to 0... */
 	n--;
 	if (n < 0 || n >= PID_AXES_MAX)
-		return 0;
+		return -1;
 
 	/* Make sure the size alignment is correct */
 	size += size % pidff->alignment;
@@ -546,7 +552,7 @@ static int pidff_get_or_allocate_block(struct pidff_device *pidff,
 				/* Memory not yet allocated */
 				block = pidff_allocate_memory_block(pidff, size);
 				if (!block)
-					return 0;
+					return -1;
 
 				offset = block->block_offset;
 				block->offset_num = n;
@@ -569,7 +575,7 @@ static int pidff_get_or_allocate_block(struct pidff_device *pidff,
 				pidff_free_memory_block(pidff, pidff->effect[i].offset[n]);
 				block = pidff_allocate_memory_block(pidff, size);
 				if (!block)
-					return 0;
+					return -1;
 
 				offset = block->block_offset;
 				block->offset_num = n;
@@ -582,7 +588,7 @@ static int pidff_get_or_allocate_block(struct pidff_device *pidff,
 			return offset;
 		}
 	}
-	return 0;
+	return -1;
 }
 
 /*
@@ -646,7 +652,7 @@ static int pidff_set_envelope_report(struct pidff_device *pidff,
 		offset = pidff_get_or_allocate_block(pidff, pidff->active.id,
 			pidff_report_store_size(pidff,
 			PID_SET_ENVELOPE), 2);
-		if (!offset)
+		if (offset < 0)
 			return -ENOSPC;
 
 		pidff->set_envelope[PID_PARAM_BLOCK_OFFSET].value[0] = offset;
@@ -702,7 +708,7 @@ static int pidff_set_constant_force_report(struct pidff_device *pidff,
 		offset = pidff_get_or_allocate_block(pidff, pidff->active.id,
 			pidff_report_store_size(pidff,
 			PID_SET_CONSTANT), 1);
-		if (!offset)
+		if (offset < 0)
 			return -ENOSPC;
 
 		pidff->set_constant[PID_PARAM_BLOCK_OFFSET].value[0] = offset;
@@ -739,15 +745,19 @@ static void pidff_set_effect_report(struct pidff_device *pidff,
 			pidff->create_new_effect_type->value[0];
 	} else {
 		pidff->set_effect_type->value[0] = pidff->active.effect_type_id;
-		if (pidff->active.offset[0])
+		if (pidff->active.offset[0]) {
 			pidff->block_offset[0].value[0] = pidff->active.
 				offset[0]->block_offset;
+			/* hid_dbg(pidff->hid, "Has offset 1 at 0x%x\n", pidff->active.offset[0]->block_offset); */
+		}
 		else
 			pidff->block_offset[0].value[0] = 0;
 
-		if (pidff->active.offset[1])
+		if (pidff->active.offset[1]) {
 			pidff->block_offset[1].value[0] = pidff->active.
 				offset[1]->block_offset;
+			/* hid_dbg(pidff->hid, "Has offset 2 at 0x%x\n", pidff->active.offset[1]->block_offset); */
+		}
 		else
 			pidff->block_offset[1].value[0] = 0;
 	}
@@ -764,6 +774,7 @@ static void pidff_set_effect_report(struct pidff_device *pidff,
 			pidff->set_effect[PID_DURATION].field->logical_maximum;
 	else
 		pidff->set_effect[PID_DURATION].value[0] = effect->replay.length;
+
 	pidff->set_effect[PID_TRIGGER_BUTTON].value[0] = effect->trigger.button;
 	pidff->set_effect[PID_TRIGGER_REPEAT_INT].value[0] =
 		effect->trigger.interval;
@@ -810,7 +821,7 @@ static int pidff_set_periodic_report(struct pidff_device *pidff,
 		offset = pidff_get_or_allocate_block(pidff, pidff->active.id,
 			pidff_report_store_size(pidff,
 			PID_SET_PERIODIC), 1);
-		if (!offset)
+		if (offset < 0)
 			return -ENOSPC;
 
 		pidff->set_periodic[PID_PARAM_BLOCK_OFFSET].value[0] = offset;
@@ -860,7 +871,7 @@ static int pidff_set_condition_report(struct pidff_device *pidff,
 			offset = pidff_get_or_allocate_block(pidff,
 				pidff->active.id, pidff_report_store_size(pidff,
 				PID_SET_CONDITION), i+1);
-			if (!offset)
+			if (offset < 0)
 				return -ENOSPC;
 
 			pidff->set_condition[PID_PARAM_BLOCK_OFFSET].value[0] =
@@ -925,7 +936,7 @@ static int pidff_set_ramp_force_report(struct pidff_device *pidff,
 		offset = pidff_get_or_allocate_block(pidff, pidff->active.id,
 			pidff_report_store_size(pidff, PID_SET_RAMP),
 			1);
-		if (!offset)
+		if (offset < 0)
 			return -ENOSPC;
 
 		pidff->set_ramp[PID_PARAM_BLOCK_OFFSET].value[0] = offset;
@@ -1367,7 +1378,9 @@ static int pidff_find_fields(struct pidff_usage *usage, const u8 *table,
 					offset = (report->field[i]->usage[j].hid
 						& 0xff) - 1;
 					if (offset >= 0 && offset <
-						PID_AXES_MAX) {
+						PID_AXES_MAX &&
+						!dev->block_offset[offset].field) {
+
 						dev->block_offset[offset].field
 							= report->field[i];
 						dev->block_offset[offset].value
