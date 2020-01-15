@@ -893,6 +893,7 @@ static int pidff_set_condition_report(struct pidff_device *pidff,
 
 		hid_hw_request(pidff->hid, pidff->reports[PID_SET_CONDITION],
 			HID_REQ_SET_REPORT);
+		hid_hw_wait(pidff->hid);
 	}
 	return 0;
 }
