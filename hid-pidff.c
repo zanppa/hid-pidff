@@ -760,7 +760,8 @@ static void pidff_set_effect_report(struct pidff_device *pidff,
 	 * However writing -1 (max unsigned value) seems to work.
 	 */
 	if(effect->replay.length == 0)	// INFINITE -> play forever
-		pidff->set_effect[PID_DURATION].value[0] = -1;	// Should be 0xFFFFFFFF
+		pidff->set_effect[PID_DURATION].value[0] =
+			pidff->set_effect[PID_DURATION].field->logical_maximum;
 	else
 		pidff->set_effect[PID_DURATION].value[0] = effect->replay.length;
 	pidff->set_effect[PID_TRIGGER_BUTTON].value[0] = effect->trigger.button;
