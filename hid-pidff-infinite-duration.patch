@@ -1,0 +1,32 @@
+hid-pidff: Make zero length effects map to infinity
+
+According to HID PID specification, effects may be sustained until explicitly
+stopped by setting their duration to INFINITE (Null). INFINITE is defined as
+the maximum value the field can hold, e.g. 255 for 8 bits.
+
+Based on earlier discussion[1], an effect with zero length should result in
+infinitely playing effect.
+
+If zero length is defined in the effect, map it to duration field as its
+maximum value (which can be larger than logical_maximum).
+
+[1] https://lore.kernel.org/linux-input/52FECB6E.4000004@iki.fi/
+
+Signed-off-by: Lauri Peltonen
+--- hid-pidff.c.orig	2020-01-17 20:30:44.000000000 +0200
++++ hid-pidff.c	2020-01-17 21:58:21.774921977 +0200
+@@ -313,7 +313,13 @@ static void pidff_set_effect_report(stru
+ 		pidff->block_load[PID_EFFECT_BLOCK_INDEX].value[0];
+ 	pidff->set_effect_type->value[0] =
+ 		pidff->create_new_effect_type->value[0];
+-	pidff->set_effect[PID_DURATION].value[0] = effect->replay.length;
++
++	if (effect->replay.length == 0)
++		pidff->set_effect[PID_DURATION].value[0] =
++			(1U << pidff->set_effect[PID_DURATION].field->report_size) - 1;
++	else
++		pidff->set_effect[PID_DURATION].value[0] = effect->replay.length;
++
+ 	pidff->set_effect[PID_TRIGGER_BUTTON].value[0] = effect->trigger.button;
+ 	pidff->set_effect[PID_TRIGGER_REPEAT_INT].value[0] =
+ 		effect->trigger.interval;
