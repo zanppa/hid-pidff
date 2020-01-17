@@ -13,8 +13,8 @@ maximum value (which can be larger than logical_maximum).
 [1] https://lore.kernel.org/linux-input/52FECB6E.4000004@iki.fi/
 
 Signed-off-by: Lauri Peltonen
---- hid-pidff.c.orig	2020-01-17 20:30:44.000000000 +0200
-+++ hid-pidff.c	2020-01-17 21:58:21.774921977 +0200
+--- drivers/hid/usbhid/hid-pidff.c.orig	2020-01-17 20:30:44.000000000 +0200
++++ drivers/hid/usbhid/hid-pidff.c	2020-01-17 21:58:21.774921977 +0200
 @@ -313,7 +313,13 @@ static void pidff_set_effect_report(stru
  		pidff->block_load[PID_EFFECT_BLOCK_INDEX].value[0];
  	pidff->set_effect_type->value[0] =
