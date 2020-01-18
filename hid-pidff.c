@@ -783,12 +783,13 @@ static void pidff_set_effect_report(struct pidff_device *pidff,
 		pidff->set_effect_optional[PID_GAIN].value[0] =
 			pidff->set_effect_optional[PID_GAIN].field->logical_maximum;
 
+
 	if ((effect->type == FF_SPRING || effect->type == FF_DAMPER ||
-		effect->type == FF_FRICTION || effect->type != FF_INERTIA) &&
+		effect->type == FF_FRICTION || effect->type == FF_INERTIA) &&
 		pidff->axes_enable) {
 		pidff->set_effect[PID_DIRECTION_ENABLE].value[0] = 0;
 
-		for (i = 0; i < pidff->axes_enable->report_count && i < 2; i++) {
+		for (i = 0; i < pidff->axes_enable->report_count; i++) {
 			pidff->axes_enable->value[i] = 1;
 		}
 	} else {
