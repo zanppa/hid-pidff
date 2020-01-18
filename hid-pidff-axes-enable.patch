@@ -51,7 +51,7 @@ Signed-off-by: Lauri Peltonen
 -				pidff->effect_direction);
 +
 +	if ((effect->type == FF_SPRING || effect->type == FF_DAMPER ||
-+		effect->type == FF_FRICTION || effect->type != FF_INERTIA) &&
++		effect->type == FF_FRICTION || effect->type == FF_INERTIA) &&
 +		pidff->axes_enable) {
 +		pidff->set_effect[PID_DIRECTION_ENABLE].value[0] = 0;
 +
