@@ -5,18 +5,18 @@ This repository contains an EXPERIMENTAL [USB HID PID driver managed mode](https
 
 The code is done againt latest git at beginning of 2020, but is tested on Linux 4.9.0-6-amd64.
 
-The driver is tested ONLY with Saitek Cyborg Evo Force.
+The driver is made to provide force-feedback support for Saitek Cyborg Evo Force. The driver is ONLY tested on this joystick.
 
-Note that the patch may be outdated, try the hid-pidff.c instead.
+Note that the patch may be outdated, use the `hid-pidff.c` instead.
 
 ## Installation
-Copy the hid-pidff.c to `drivers/hid/usbhid/` in your kernel tree. Build the usbhid module with
+Copy the `hid-pidff.c` to `drivers/hid/usbhid/` in your kernel tree. Build the usbhid module from the kernel source root with
 
 ```
 sudo make M=drivers/hid/usbhid
 ```
 
-and install the module, e.g. using
+and load the module, e.g. by using
 
 ```
 sudo rmmod usbhid && sudo insmod drivers/hid/usbhid/usbhid.ko
