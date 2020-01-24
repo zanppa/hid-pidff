@@ -25,3 +25,5 @@ sudo rmmod usbhid && sudo insmod drivers/hid/usbhid/usbhid.ko
 
 ## Notes
 This driver is experimental and may cause issues with device managed force feedback devices or other hid devices. Even though I try to test the driver, there might be bugs or memory leaks. Try at your own risk.
+
+On Windows the Saitek Cyborg Evo Force uses I-Force protocol. [There are](https://patchwork.kernel.org/patch/69106/) [some](https://patchwork.kernel.org/patch/68558/) [patches](https://patchwork.kernel.org/patch/69092/) that might also work for the joystick.
